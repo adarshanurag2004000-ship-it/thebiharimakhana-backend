@@ -3,6 +3,8 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const helmet = require('helmet'); // Security: Adds various HTTP security headers
 const rateLimit = require('express-rate-limit'); // Security: Prevents brute-force attacks
+const Joi = require('joi'); // Security: For powerful input validation
+const he = require('he'); // Security: For encoding HTML to prevent XSS attacks
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -77,7 +79,7 @@ app.get('/', (req, res) => {
 });
 
 // THIS IS THE SECURED PAGE TO VIEW YOUR ORDERS
-app.get('/view-orders', async (req, res) => {
+app.get('/view-orders', async (req, res, next) => {
     const { password } = req.query;
     const adminPassword = process.env.ADMIN_PASSWORD;
 
@@ -104,16 +106,23 @@ app.get('/view-orders', async (req, res) => {
         `;
 
         orders.forEach(order => {
+            // Security Enhancement: Encode all user-provided data before displaying it
+            const safePaymentId = he.encode(order.payment_id);
+            const safeCustomerName = he.encode(order.customer_name);
+            const safePhone = he.encode(order.phone);
+            const safeAddress = he.encode(order.address);
+            const safeCartItems = he.encode(JSON.stringify(order.cart_items, null, 2));
+
             html += `
                 <div class="order">
                     <h2>Order #${order.id} - ${new Date(order.order_date).toLocaleString()}</h2>
-                    <p><strong>Payment ID:</strong> ${order.payment_id}</p>
+                    <p><strong>Payment ID:</strong> ${safePaymentId}</p>
                     <h3>Customer Details:</h3>
-                    <p><strong>Name:</strong> ${order.customer_name}</p>
-                    <p><strong>Phone:</strong> ${order.phone}</p>
-                    <p><strong>Address:</strong> ${order.address}</p>
+                    <p><strong>Name:</strong> ${safeCustomerName}</p>
+                    <p><strong>Phone:</strong> ${safePhone}</p>
+                    <p><strong>Address:</strong> ${safeAddress}</p>
                     <h3>Cart Items:</h3>
-                    <pre>${JSON.stringify(order.cart_items, null, 2)}</pre>
+                    <pre>${safeCartItems}</pre>
                 </div>
             `;
         });
@@ -121,43 +130,55 @@ app.get('/view-orders', async (req, res) => {
         res.send(html);
 
     } catch (err) {
-        console.error('Error fetching orders:', err);
-        res.status(500).send('<h1>Error</h1><p>Could not fetch orders from the database.</p>');
+        next(err); // Pass errors to the central error handler
     }
 });
 
-
-app.post('/checkout', async (req, res) => {
-  const { cart, addressDetails, paymentId } = req.body;
-  
-  // Security Enhancement: Basic Input Validation
-  if (!cart || typeof cart !== 'object' || Object.keys(cart).length === 0) {
-      return res.status(400).json({ success: false, message: "Invalid cart data."});
-  }
-  if (!addressDetails || typeof addressDetails.name !== 'string' || typeof addressDetails.phone !== 'string' || typeof addressDetails.address !== 'string') {
-      return res.status(400).json({ success: false, message: "Invalid address details."});
-  }
-  if (!paymentId || typeof paymentId !== 'string') {
-      return res.status(400).json({ success: false, message: "Invalid payment ID."});
-  }
-
-  const insertQuery = `
-    INSERT INTO orders (customer_name, phone, address, cart_items, payment_id)
-    VALUES ($1, $2, $3, $4, $5);
-  `;
-  const values = [addressDetails.name, addressDetails.phone, addressDetails.address, cart, paymentId];
-
-  try {
-    const client = await pool.connect();
-    await client.query(insertQuery, values);
-    client.release();
-    console.log('--- SUCCESS: ORDER SAVED TO DATABASE ---');
-    res.json({ success: true, message: "Order saved successfully!" });
-  } catch (err) {
-    console.error('--- ERROR: FAILED TO SAVE ORDER TO DATABASE ---', err);
-    res.status(500).json({ success: false, message: "Failed to save order." });
-  }
+// Security Enhancement: Define a strict schema for checkout data
+const checkoutSchema = Joi.object({
+    paymentId: Joi.string().trim().required(),
+    cart: Joi.object().min(1).required(),
+    addressDetails: Joi.object({
+        name: Joi.string().trim().min(2).max(100).required(),
+        phone: Joi.string().trim().pattern(/^[0-9]{10,15}$/).required(),
+        address: Joi.string().trim().min(10).max(500).required()
+    }).required()
 });
+
+app.post('/checkout', async (req, res, next) => {
+    // Security Enhancement: Validate input against the schema
+    const { error, value } = checkoutSchema.validate(req.body);
+    if (error) {
+        console.log("Validation Error:", error.details[0].message);
+        return res.status(422).json({ success: false, message: `Invalid input: ${error.details[0].message}` });
+    }
+
+    const { cart, addressDetails, paymentId } = value; // Use the validated and sanitized value
+
+    const insertQuery = `
+        INSERT INTO orders (customer_name, phone, address, cart_items, payment_id)
+        VALUES ($1, $2, $3, $4, $5);
+    `;
+    const values = [addressDetails.name, addressDetails.phone, addressDetails.address, cart, paymentId];
+
+    try {
+        const client = await pool.connect();
+        await client.query(insertQuery, values);
+        client.release();
+        console.log('--- SUCCESS: ORDER SAVED TO DATABASE ---');
+        res.json({ success: true, message: "Order saved successfully!" });
+    } catch (err) {
+        next(err); // Pass errors to the central error handler
+    }
+});
+
+// --- CENTRAL ERROR HANDLER ---
+// Security Enhancement: A generic error handler to prevent leaking server details
+app.use((err, req, res, next) => {
+    console.error('--- UNHANDLED ERROR ---', err.stack);
+    res.status(500).json({ success: false, message: 'An unexpected error occurred. Please try again later.' });
+});
+
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
