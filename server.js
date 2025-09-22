@@ -166,15 +166,21 @@ app.get('/admin', checkAdminPassword, (req, res) => {
 app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
     const { name, price, description, image_url } = req.body;
 
+    // --- STRONGER VALIDATION ---
+    const parsedPrice = parseFloat(price);
     if (!name || !price || !description || !image_url) {
-        return res.status(400).send('All fields are required.');
+        return res.status(400).send('<h1>Error</h1><p>All fields are required.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
     }
+    if (isNaN(parsedPrice) || parsedPrice <= 0) {
+        return res.status(400).send('<h1>Error</h1><p>Price must be a valid positive number (e.g., 199.50).</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
+    }
+    // --- END VALIDATION ---
 
     try {
         const client = await pool.connect();
         await client.query(
             'INSERT INTO products (name, price, description, image_url) VALUES ($1, $2, $3, $4)',
-            [name, parseFloat(price), description, image_url]
+            [name, parsedPrice, description, image_url] // Use the validated, parsed price
         );
         client.release();
         res.send('<h1>Product Added Successfully!</h1><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Add another product</a>');
