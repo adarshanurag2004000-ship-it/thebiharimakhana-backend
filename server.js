@@ -69,6 +69,8 @@ async function setupDatabase() {
 const productSchema = Joi.object({
     productName: Joi.string().min(3).max(100).required(),
     price: Joi.number().positive().precision(2).required(),
+    salePrice: Joi.number().positive().precision(2).allow(null, ''),
+    stockQuantity: Joi.number().integer().min(0).required(),
     description: Joi.string().min(10).max(1000).required(),
     imageUrl: Joi.string().uri().max(2048).required()
 });
@@ -86,7 +88,7 @@ app.get('/', async (req, res) => {
 
 app.get('/api/products', async (req, res) => {
     try {
-        const { rows } = await pool.query('SELECT * FROM products ORDER BY created_at DESC');
+        const { rows } = await pool.query('SELECT * FROM products WHERE stock_quantity > 0 ORDER BY created_at DESC');
         res.json(rows);
     } catch (err) {
         res.status(500).send('Error fetching products');
@@ -95,16 +97,13 @@ app.get('/api/products', async (req, res) => {
 
 // --- Admin Routes ---
 
-// The main admin dashboard
+// The main product management dashboard
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) {
-        return res.status(403).send('Access Denied');
-    }
-
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
         const { rows } = await pool.query('SELECT * FROM products ORDER BY id ASC');
-        let productsHtml = rows.map(p => `
+        const productsHtml = rows.map(p => `
             <tr>
                 <td>${p.id}</td>
                 <td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td>
@@ -113,97 +112,77 @@ app.get('/admin/products', async (req, res) => {
                 <td>${p.sale_price || 'N/A'}</td>
                 <td>${p.stock_quantity}</td>
                 <td>
-                    <button>Edit</button>
+                    <a href="/admin/edit-product/${p.id}?password=${encodeURIComponent(password)}">Edit</a>
                     <form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
                         <button type="submit" onclick="return confirm('Are you sure you want to delete this product?');">Delete</button>
                     </form>
                 </td>
             </tr>
         `).join('');
-
-        res.send(`
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <title>Manage Products</title>
-                <style>
-                    body { font-family: sans-serif; margin: 2em; }
-                    table { border-collapse: collapse; width: 100%; }
-                    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-                    th { background-color: #f2f2f2; }
-                    tr:nth-child(even) { background-color: #f9f9f9; }
-                    img { max-width: 50px; height: auto; }
-                    .add-form { margin-top: 2em; padding: 1em; border: 1px solid #ddd; }
-                </style>
-            </head>
-            <body>
-                <h1>Manage Products</h1>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Image</th>
-                            <th>Name</th>
-                            <th>Price</th>
-                            <th>Sale Price</th>
-                            <th>Stock</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${productsHtml}
-                    </tbody>
-                </table>
-
-                <div class="add-form">
-                    <h2>Add New Product</h2>
-                    <form action="/add-product?password=${encodeURIComponent(password)}" method="POST">
-                        <p><label>Name: <input name="productName" required></label></p>
-                        <p><label>Price (e.g., 199.00): <input name="price" type="number" step="0.01" required></label></p>
-                        <p><label>Description: <textarea name="description" required></textarea></label></p>
-                        <p><label>Image URL: <input name="imageUrl" required></label></p>
-                        <button type="submit">Add Product</button>
-                    </form>
-                </div>
-            </body>
-            </html>
-        `);
+        res.send(`<!DOCTYPE html><html lang="en"><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f2f2f2}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price (e.g., 199.00): <input name="price" type="number" step="0.01" required></label></p><p><label>Stock Quantity: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
     } catch (err) {
-        console.error('Error fetching products for admin:', err);
         res.status(500).send('Error loading product management page.');
     }
 });
 
-// THIS IS THE NEW ROUTE TO HANDLE THE DELETE REQUEST
-app.post('/admin/delete-product/:id', async (req, res) => {
+// THIS IS THE NEW PAGE TO SHOW THE EDIT FORM
+app.get('/admin/edit-product/:id', async (req, res) => {
     const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) {
-        return res.status(403).send('Access Denied');
-    }
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
         const { id } = req.params;
-        await pool.query('DELETE FROM products WHERE id = $1', [id]);
-        // Redirect back to the products management page after deletion
-        res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
+        const { rows } = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
+        if (rows.length === 0) {
+            return res.status(404).send('Product not found.');
+        }
+        const p = rows[0];
+        res.send(`<!DOCTYPE html><html lang="en"><head><title>Edit Product</title><style>body{font-family:sans-serif;margin:2em}label,input,textarea{display:block;width:300px;margin-bottom:1em}</style></head><body><h1>Edit Product: ${he.encode(p.name)}</h1><form action="/admin/update-product/${p.id}?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" value="${he.encode(p.name)}" required></label></p><p><label>Price (e.g., 199.00): <input name="price" type="number" step="0.01" value="${p.price}" required></label></p><p><label>Sale Price (optional): <input name="salePrice" type="number" step="0.01" value="${p.sale_price || ''}"></label></p><p><label>Stock Quantity: <input name="stockQuantity" type="number" value="${p.stock_quantity}" required></label></p><p><label>Description: <textarea name="description" required>${he.encode(p.description)}</textarea></label></p><p><label>Image URL: <input name="imageUrl" value="${p.image_url}" required></label></p><button type="submit">Update Product</button></form></body></html>`);
     } catch (err) {
-        console.error('Error deleting product:', err);
-        res.status(500).send('Error deleting product.');
+        res.status(500).send('Error loading edit page.');
     }
 });
 
-
-app.post('/add-product', async (req, res) => {
+// THIS IS THE NEW ROUTE TO HANDLE THE UPDATE
+app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) {
-        return res.status(403).send('Access Denied');
-    }
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { id } = req.params;
     const { error, value } = productSchema.validate(req.body);
     if (error) {
         return res.status(400).send(error.details[0].message);
     }
     try {
-        await pool.query('INSERT INTO products(name, price, description, image_url) VALUES($1, $2, $3, $4)', [value.productName, value.price, value.description, value.imageUrl]);
+        await pool.query(
+            'UPDATE products SET name = $1, price = $2, description = $3, image_url = $4, sale_price = $5, stock_quantity = $6 WHERE id = $7',
+            [value.productName, value.price, value.description, value.imageUrl, value.salePrice || null, value.stockQuantity, id]
+        );
+        res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error updating product.');
+    }
+});
+
+
+app.post('/admin/delete-product/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        await pool.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+        res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error deleting product.');
+    }
+});
+
+app.post('/add-product', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { error, value } = productSchema.validate(req.body);
+    if (error) {
+        return res.status(400).send(error.details[0].message);
+    }
+    try {
+        await pool.query('INSERT INTO products(name, price, description, image_url, stock_quantity) VALUES($1, $2, $3, $4, $5)', [value.productName, value.price, value.description, value.imageUrl, value.stockQuantity]);
         res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
     } catch (err) {
         res.status(500).send('Error adding product.');
@@ -212,9 +191,7 @@ app.post('/add-product', async (req, res) => {
 
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) {
-        return res.status(403).send('Access Denied');
-    }
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
         let html = `<h1>All Orders</h1><table border="1"><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Payment ID</th><th>Date</th><th>Items</th></tr>`;
@@ -224,20 +201,16 @@ app.get('/view-orders', async (req, res) => {
                 try {
                     const items = (typeof order.cart_items === 'string') ? JSON.parse(order.cart_items) : order.cart_items;
                     itemsHtml = '<ul>' + Object.keys(items).map(key => `<li>${he.encode(key)} (x${items[key].quantity})</li>`).join('') + '</ul>';
-                } catch (e) {
-                    itemsHtml = '<span style="color:red;">Invalid item data</span>';
-                }
+                } catch (e) { itemsHtml = '<span style="color:red;">Invalid item data</span>'; }
             }
             html += `<tr><td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td></tr>`;
         });
         html += '</table>';
         res.send(html);
     } catch (err) {
-        console.error('Error fetching orders:', err);
         res.status(500).send('Internal Server Error');
     }
 });
-
 
 app.use((err, req, res, next) => {
     console.error(err.stack);
