@@ -12,7 +12,19 @@ const port = process.env.PORT || 3000;
 
 // --- Security Middleware ---
 app.use(helmet());
-app.use(cors());
+
+const whitelist = ['https://inspiring-cranachan-69450a.netlify.app', 'https://www.inspiring-cranachan-69450a.netlify.app', 'https://thebiharimakhana-backend.onrender.com'];
+const corsOptions = {
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+        if (whitelist.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    }
+};
+app.use(cors(corsOptions));
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
