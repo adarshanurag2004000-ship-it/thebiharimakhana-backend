@@ -1,50 +1,90 @@
-// This is the main file for our backend kitchen.
 const express = require('express');
 const cors = require('cors');
+const { Pool } = require('pg'); // Our new database tool
 
 const app = express();
-const port = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3001;
 
-// Allow our website to talk to this backend
+// Use CORS to allow our website to talk to the backend
 app.use(cors());
-// Allow the backend to understand JSON data sent from the website
 app.use(express.json());
 
-// A simple test to see if the kitchen is open
+// Create a connection to our database using the secret key
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
+
+// A function to set up our database table the first time the server starts
+const setupDatabase = async () => {
+    const client = await pool.connect();
+    try {
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
+                customer_name VARCHAR(255) NOT NULL,
+                phone VARCHAR(20) NOT NULL,
+                address TEXT NOT NULL,
+                cart_items JSONB NOT NULL,
+                payment_id VARCHAR(255) NOT NULL,
+                order_date TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+        console.log('Database table "orders" is ready.');
+    } catch (err) {
+        console.error('Error setting up database table:', err);
+    } finally {
+        client.release();
+    }
+};
+
+
+// Main page of the backend
 app.get('/', (req, res) => {
-  res.send('The Bihari Makhana backend is running!');
+  res.send('The Bihari Makhana backend is running and connected to the database!');
 });
 
-// The "Waiter" that listens for orders AFTER payment
-app.post('/checkout', (req, res) => {
-  // NOW we expect the cart, address, AND the payment ID from Razorpay
-  const { cart, addressDetails, paymentId } = req.body; 
-  
-  console.log("--- NEW PAYMENT & ORDER RECEIVED ---");
-  console.log("Timestamp:", new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }));
-  console.log("Razorpay Payment ID:", paymentId);
-  console.log("--- Customer Details ---");
-  console.log("Name:", addressDetails.name);
-  console.log("Phone:", addressDetails.phone);
-  console.log("Address:", addressDetails.address);
-  console.log("--- Items in Cart ---");
+// The checkout function, now upgraded to save to the database
+app.post('/checkout', async (req, res) => {
+  const { cart, addressDetails, paymentId } = req.body;
+
+  console.log('--- NEW FULL ORDER RECEIVED ---');
+  console.log(`Timestamp: ${new Date().toLocaleString()}`);
+  console.log('--- Customer Details ---');
+  console.log(`Name: ${addressDetails.name}`);
+  console.log(`Phone: ${addressDetails.phone}`);
+  console.log(`Address: ${addressDetails.address}`);
+  console.log('--- Items in Cart ---');
   console.log(cart);
-  
-  // ================== IMPORTANT SECURITY STEP ==================
-  // In a real production system, you would add code here to:
-  // 1. Get your Razorpay Key Secret from a secure place.
-  // 2. Use that secret to verify the payment signature sent by Razorpay.
-  // 3. If the signature is valid, save the order to your database.
-  // 4. If the signature is invalid, you would reject the order.
-  // =============================================================
-  
-  res.json({ success: true, message: "Order and Payment ID received successfully!" });
-  console.log("--- ORDER PROCESSED ---");
+  console.log('--- Payment ID ---');
+  console.log(paymentId);
+  console.log('--- ATTEMPTING TO SAVE TO DATABASE ---');
+
+  // The SQL command to insert the order into our filing cabinet
+  const insertQuery = `
+    INSERT INTO orders (customer_name, phone, address, cart_items, payment_id)
+    VALUES ($1, $2, $3, $4, $5);
+  `;
+  const values = [addressDetails.name, addressDetails.phone, addressDetails.address, cart, paymentId];
+
+  try {
+    const client = await pool.connect();
+    await client.query(insertQuery, values);
+    client.release();
+    console.log('--- SUCCESS: ORDER SAVED TO DATABASE ---');
+    res.json({ success: true, message: "Order saved successfully!" });
+  } catch (err) {
+    console.error('--- ERROR: FAILED TO SAVE ORDER TO DATABASE ---');
+    console.error(err);
+    res.status(500).json({ success: false, message: "Failed to save order." });
+  }
 });
 
-
-// Start the server and listen for requests
-app.listen(port, () => {
-  console.log(`Server is listening on port ${port}`);
+// Start the server
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+  setupDatabase(); // Set up the database as soon as the server starts
 });
 
