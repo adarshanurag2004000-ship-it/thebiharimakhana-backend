@@ -5,7 +5,23 @@ const { Pool } = require('pg');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Security Enhancement: Only allow your Netlify website to talk to this backend
+const allowedOrigins = [
+    'https://voluble-babka-5fcbfa.netlify.app', // Replace with your actual Netlify URL
+    'http://localhost:3000' // For testing on your computer
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
+      callback(null, true)
+    } else {
+      callback(new Error('Not allowed by CORS'))
+    }
+  }
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 const pool = new Pool({
@@ -41,16 +57,24 @@ app.get('/', (req, res) => {
   res.send('The Bihari Makhana backend is running and connected to the database!');
 });
 
-// THIS IS THE NEW PAGE TO VIEW YOUR ORDERS
+// THIS IS THE SECURED PAGE TO VIEW YOUR ORDERS
 app.get('/view-orders', async (req, res) => {
+    // Security Check: Get password from the query ?password=...
+    const { password } = req.query;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    // If there is no admin password set, or if the provided password is wrong, deny access.
+    if (!adminPassword || password !== adminPassword) {
+        return res.status(401).send('<h1>Access Denied</h1><p>You need a valid password to view this page.</p>');
+    }
+
+    // If password is correct, proceed to show the orders
     try {
         const client = await pool.connect();
-        // Get all orders, with the newest ones first
         const result = await client.query('SELECT * FROM orders ORDER BY order_date DESC;');
         const orders = result.rows;
         client.release();
 
-        // Create a simple HTML page to display the orders
         let html = `
             <style>
                 body { font-family: sans-serif; margin: 20px; }
@@ -89,6 +113,12 @@ app.get('/view-orders', async (req, res) => {
 
 app.post('/checkout', async (req, res) => {
   const { cart, addressDetails, paymentId } = req.body;
+  
+  // Security Enhancement: Basic check to ensure data is present
+  if (!cart || !addressDetails || !paymentId) {
+      return res.status(400).json({ success: false, message: "Missing order information."});
+  }
+
   const insertQuery = `
     INSERT INTO orders (customer_name, phone, address, cart_items, payment_id)
     VALUES ($1, $2, $3, $4, $5);
