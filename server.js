@@ -169,5 +169,76 @@ app.get('/admin', checkAdminPassword, (req, res) => {
 
 // Endpoint to handle adding the product
 app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
-    const { name, price, description,.
+    const { name, price, description, image_url } = req.body;
+
+    const parsedPrice = parseFloat(price);
+    if (!name || !price || !description || !image_url) {
+        return res.status(400).send('<h1>Error</h1><p>All fields are required.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
+    }
+    if (isNaN(parsedPrice) || parsedPrice <= 0) {
+        return res.status(400).send('<h1>Error</h1><p>Price must be a valid positive number (e.g., 199.50).</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
+    }
+
+    try {
+        const client = await pool.connect();
+        await client.query(
+            'INSERT INTO products (name, price, description, image_url) VALUES ($1, $2, $3, $4)',
+            [name, parsedPrice, description, image_url]
+        );
+        client.release();
+        res.send('<h1>Product Added Successfully!</h1><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Add another product</a>');
+    } catch(err) {
+        console.error('--- DATABASE ERROR SAVING PRODUCT ---', err);
+        res.status(500).send('<h1>Error Saving Product</h1><p>There was a problem saving the product to the database. Please check the server logs for the detailed error message.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
+    }
+});
+
+
+// --- CUSTOMER SECTION ---
+const checkoutSchema = Joi.object({
+    paymentId: Joi.string().trim().required(),
+    cart: Joi.object().min(1).required(),
+    addressDetails: Joi.object({
+        name: Joi.string().trim().min(2).max(100).required(),
+        phone: Joi.string().trim().pattern(/^[0-9]{10,15}$/).required(),
+        address: Joi.string().trim().min(10).max(500).required()
+    }).required()
+});
+
+app.post('/checkout', async (req, res, next) => {
+    const { error, value } = checkoutSchema.validate(req.body);
+    if (error) {
+        console.log("Validation Error:", error.details[0].message);
+        return res.status(422).json({ success: false, message: `Invalid input: ${error.details[0].message}` });
+    }
+
+    const { cart, addressDetails, paymentId } = value;
+    const insertQuery = `
+        INSERT INTO orders (customer_name, phone, address, cart_items, payment_id)
+        VALUES ($1, $2, $3, $4, $5);
+    `;
+    const values = [addressDetails.name, addressDetails.phone, addressDetails.address, cart, paymentId];
+
+    try {
+        const client = await pool.connect();
+        await client.query(insertQuery, values);
+        client.release();
+        console.log('--- SUCCESS: ORDER SAVED TO DATABASE ---');
+        res.json({ success: true, message: "Order saved successfully!" });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// --- CENTRAL ERROR HANDLER ---
+app.use((err, req, res, next) => {
+    console.error('--- UNHANDLED ERROR ---', err.stack);
+    res.status(500).json({ success: false, message: 'An unexpected error occurred. Please try again later.' });
+});
+
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+  setupDatabase();
+});
 
