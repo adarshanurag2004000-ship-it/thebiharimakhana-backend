@@ -72,8 +72,16 @@ const productSchema = Joi.object({
 });
 
 // --- API Routes ---
-app.get('/', (req, res) => {
-    res.send('The Bihari Makhana Backend is running!');
+
+// THIS IS THE UPDATED HOMEPAGE ROUTE
+app.get('/', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        res.send('The Bihari Makhana Backend is running and connected to the database.');
+        client.release();
+    } catch (err) {
+        res.status(500).send('Backend is running, but could not connect to the database.');
+    }
 });
 
 app.get('/api/products', async (req, res) => {
@@ -86,8 +94,6 @@ app.get('/api/products', async (req, res) => {
 });
 
 // --- Admin Routes ---
-
-// NEW: A one-time tool to completely fix the database structure.
 app.get('/admin/fix-database', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) {
