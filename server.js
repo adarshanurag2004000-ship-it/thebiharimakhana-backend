@@ -66,14 +66,12 @@ async function setupDatabase() {
 // --- Validation Schemas ---
 const productSchema = Joi.object({
     productName: Joi.string().min(3).max(100).required(),
-    price: Joi.number().positive().precision(2).required(),
+    price: J.number().positive().precision(2).required(),
     description: Joi.string().min(10).max(1000).required(),
     imageUrl: Joi.string().uri().max(2048).required()
 });
 
 // --- API Routes ---
-
-// THIS IS THE UPDATED HOMEPAGE ROUTE
 app.get('/', async (req, res) => {
     try {
         const client = await pool.connect();
@@ -94,6 +92,30 @@ app.get('/api/products', async (req, res) => {
 });
 
 // --- Admin Routes ---
+
+// NEW: A one-time tool to upgrade the products table
+app.get('/admin/fix-products-table', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) {
+        return res.status(403).send('Access Denied');
+    }
+    const client = await pool.connect();
+    try {
+        // Add sale_price column if it doesn't exist
+        await client.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_price NUMERIC(10, 2);');
+        // Add stock_quantity column if it doesn't exist, with a default value of 10
+        await client.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_quantity INTEGER NOT NULL DEFAULT 10;');
+        
+        res.send('<h1>Success! The products table has been upgraded.</h1><p>The `sale_price` and `stock_quantity` columns have been added. You are ready for the next features.</p>');
+    } catch (err) {
+        console.error('Error fixing products table:', err);
+        res.status(500).send('An error occurred while upgrading the products table.');
+    } finally {
+        client.release();
+    }
+});
+
+
 app.get('/admin/fix-database', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) {
@@ -102,7 +124,6 @@ app.get('/admin/fix-database', async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('DROP TABLE IF EXISTS orders;');
-        
         await client.query(`
             CREATE TABLE orders (
                 id SERIAL PRIMARY KEY,
