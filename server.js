@@ -166,7 +166,6 @@ app.get('/admin', checkAdminPassword, (req, res) => {
 app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
     const { name, price, description, image_url } = req.body;
 
-    // --- STRONGER VALIDATION ---
     const parsedPrice = parseFloat(price);
     if (!name || !price || !description || !image_url) {
         return res.status(400).send('<h1>Error</h1><p>All fields are required.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
@@ -174,18 +173,19 @@ app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
     if (isNaN(parsedPrice) || parsedPrice <= 0) {
         return res.status(400).send('<h1>Error</h1><p>Price must be a valid positive number (e.g., 199.50).</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
     }
-    // --- END VALIDATION ---
 
     try {
         const client = await pool.connect();
         await client.query(
             'INSERT INTO products (name, price, description, image_url) VALUES ($1, $2, $3, $4)',
-            [name, parsedPrice, description, image_url] // Use the validated, parsed price
+            [name, parsedPrice, description, image_url]
         );
         client.release();
         res.send('<h1>Product Added Successfully!</h1><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Add another product</a>');
     } catch(err) {
-        next(err);
+        // --- IMPROVED ERROR HANDLING ---
+        console.error('--- DATABASE ERROR SAVING PRODUCT ---', err); // This will show the real error in your Render Logs
+        res.status(500).send('<h1>Error Saving Product</h1><p>There was a problem saving the product to the database. Please ensure all fields are correct. If the problem persists, check the server logs for the detailed error message.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
     }
 });
 
