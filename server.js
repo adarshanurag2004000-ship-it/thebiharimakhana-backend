@@ -13,15 +13,13 @@ const PORT = process.env.PORT || 3001;
 app.use(helmet());
 const limiter = rateLimit({
 	windowMs: 15 * 60 * 1000,
-	max: 100,
+	max: 100, // Increased for API calls from frontend
 	standardHeaders: true,
 	legacyHeaders: false,
     message: 'Too many requests from this IP, please try again after 15 minutes'
 });
 app.use(limiter);
 
-// --- FINAL CORS FIX ---
-// This updated logic explicitly handles the 'null' origin and adds a pre-flight handler.
 const allowedOrigins = [
     'https://inspiring-cranachan-69450a.netlify.app', // Your frontend website
     'https://thebiharimakhana-backend.onrender.com', // Your backend's own address
@@ -38,9 +36,7 @@ const corsOptions = {
   }
 };
 
-// This handles the special 'pre-flight' request that browsers send.
 app.options('*', cors(corsOptions));
-
 app.use(cors(corsOptions));
 // --- END SECURITY ---
 
@@ -196,6 +192,20 @@ app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
 
 
 // --- CUSTOMER SECTION ---
+
+// NEW: Public endpoint to get all products
+app.get('/api/products', async (req, res, next) => {
+    try {
+        const client = await pool.connect();
+        const result = await client.query('SELECT * FROM products WHERE is_active = true ORDER BY created_at DESC;');
+        client.release();
+        res.json(result.rows);
+    } catch (err) {
+        next(err);
+    }
+});
+
+
 const checkoutSchema = Joi.object({
     paymentId: Joi.string().trim().required(),
     cart: Joi.object().min(1).required(),
