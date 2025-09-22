@@ -20,8 +20,8 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// --- CORS FIX ---
-// Add the backend's own URL to the list of allowed origins
+// --- CORS FIX V2 ---
+// Add the backend's own URL to the list of allowed origins, with and without a trailing slash.
 const allowedOrigins = [
     'https://inspiring-cranachan-69450a.netlify.app', // Your frontend website
     'https://thebiharimakhana-backend.onrender.com', // Your backend's own address
@@ -30,10 +30,16 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: function (origin, callback) {
-    if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
-      callback(null, true)
+    // For debugging: Log the origin the browser is sending
+    console.log('CORS check: Origin is', origin);
+
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      return callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'))
+      return callback(new Error('Not allowed by CORS'));
     }
   }
 };
