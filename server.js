@@ -20,9 +20,6 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// --- FINAL CORS FIX ---
-// This updated logic explicitly allows the 'null' origin, which browsers send
-// in specific scenarios like a form submission from a page served by this same server.
 const allowedOrigins = [
     'https://inspiring-cranachan-69450a.netlify.app', // Your frontend website
     'https://thebiharimakhana-backend.onrender.com', // Your backend's own address
@@ -31,11 +28,8 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // For debugging: Log the origin the browser is sending
     console.log('CORS check: Origin is', origin);
-
-    // If the origin is in our whitelist OR if the origin is null (from our admin page form), allow it.
-    if (allowedOrigins.indexOf(origin) !== -1 || origin === null) {
+    if (allowedOrigins.indexOf(origin) !== -1 || origin === null || !origin) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -46,7 +40,7 @@ app.use(cors(corsOptions));
 // --- END SECURITY ---
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // Middleware to parse form data
+app.use(express.urlencoded({ extended: true }));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -97,12 +91,11 @@ app.get('/', (req, res) => {
 
 // --- ADMIN SECTION ---
 
-// Middleware to check admin password
 const checkAdminPassword = (req, res, next) => {
     const password = req.query.password || req.body.password;
     const adminPassword = process.env.ADMIN_PASSWORD;
     if (!adminPassword || password !== adminPassword) {
-        return res.status(401).send('<h1>Access Denied</h1>');
+        return res.status(401).send('<h1>Access Denied</h1><p>Password is missing or incorrect. Make sure you have set the ADMIN_PASSWORD environment variable on Render.</p>');
     }
     next();
 };
@@ -122,7 +115,7 @@ app.get('/view-orders', checkAdminPassword, async (req, res, next) => {
         `;
 
         orders.forEach(order => {
-            const safePaymentId = he.encode(order.payment_id); const safeCustomerName = he.encode(order.customer_name); const safePhone = he.encode(order.phone); const safeAddress = he.encode(order.address); const safeCartItems = he.encode(JSON.stringify(order.cart_items, null, 2));
+            const safePaymentId = he.encode(String(order.payment_id || '')); const safeCustomerName = he.encode(String(order.customer_name || '')); const safePhone = he.encode(String(order.phone || '')); const safeAddress = he.encode(String(order.address || '')); const safeCartItems = he.encode(JSON.stringify(order.cart_items, null, 2) || '');
             html += `
                 <div class="order">
                     <h2>Order #${order.id} - ${new Date(order.order_date).toLocaleString()}</h2> <p><strong>Payment ID:</strong> ${safePaymentId}</p> <h3>Customer Details:</h3> <p><strong>Name:</strong> ${safeCustomerName}</p> <p><strong>Phone:</strong> ${safePhone}</p> <p><strong>Address:</strong> ${safeAddress}</p> <h3>Cart Items:</h3> <pre>${safeCartItems}</pre>
@@ -135,9 +128,8 @@ app.get('/view-orders', checkAdminPassword, async (req, res, next) => {
     }
 });
 
-// Admin page to add products
 app.get('/admin', checkAdminPassword, (req, res) => {
-    const adminPassword = process.env.ADMIN_PASSWORD;
+    const adminPassword = process.env.ADMIN_PASSWORD || '';
     res.send(`
         <style>
             body { font-family: sans-serif; margin: 40px; background-color: #f9fafb; }
@@ -172,78 +164,6 @@ app.get('/admin', checkAdminPassword, (req, res) => {
     `);
 });
 
-// Endpoint to handle adding the product
 app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
-    const { name, price, description, image_url } = req.body;
-
-    const parsedPrice = parseFloat(price);
-    if (!name || !price || !description || !image_url) {
-        return res.status(400).send('<h1>Error</h1><p>All fields are required.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
-    }
-    if (isNaN(parsedPrice) || parsedPrice <= 0) {
-        return res.status(400).send('<h1>Error</h1><p>Price must be a valid positive number (e.g., 199.50).</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
-    }
-
-    try {
-        const client = await pool.connect();
-        await client.query(
-            'INSERT INTO products (name, price, description, image_url) VALUES ($1, $2, $3, $4)',
-            [name, parsedPrice, description, image_url]
-        );
-        client.release();
-        res.send('<h1>Product Added Successfully!</h1><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Add another product</a>');
-    } catch(err) {
-        console.error('--- DATABASE ERROR SAVING PRODUCT ---', err);
-        res.status(500).send('<h1>Error Saving Product</h1><p>There was a problem saving the product to the database. Please check the server logs for the detailed error message.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
-    }
-});
-
-
-// --- CUSTOMER SECTION ---
-const checkoutSchema = Joi.object({
-    paymentId: Joi.string().trim().required(),
-    cart: Joi.object().min(1).required(),
-    addressDetails: Joi.object({
-        name: Joi.string().trim().min(2).max(100).required(),
-        phone: Joi.string().trim().pattern(/^[0-9]{10,15}$/).required(),
-        address: Joi.string().trim().min(10).max(500).required()
-    }).required()
-});
-
-app.post('/checkout', async (req, res, next) => {
-    const { error, value } = checkoutSchema.validate(req.body);
-    if (error) {
-        console.log("Validation Error:", error.details[0].message);
-        return res.status(422).json({ success: false, message: `Invalid input: ${error.details[0].message}` });
-    }
-
-    const { cart, addressDetails, paymentId } = value;
-    const insertQuery = `
-        INSERT INTO orders (customer_name, phone, address, cart_items, payment_id)
-        VALUES ($1, $2, $3, $4, $5);
-    `;
-    const values = [addressDetails.name, addressDetails.phone, addressDetails.address, cart, paymentId];
-
-    try {
-        const client = await pool.connect();
-        await client.query(insertQuery, values);
-        client.release();
-        console.log('--- SUCCESS: ORDER SAVED TO DATABASE ---');
-        res.json({ success: true, message: "Order saved successfully!" });
-    } catch (err) {
-        next(err);
-    }
-});
-
-// --- CENTRAL ERROR HANDLER ---
-app.use((err, req, res, next) => {
-    console.error('--- UNHANDLED ERROR ---', err.stack);
-    res.status(500).json({ success: false, message: 'An unexpected error occurred. Please try again later.' });
-});
-
-
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  setupDatabase();
-});
+    const { name, price, description, image_url }.
 
