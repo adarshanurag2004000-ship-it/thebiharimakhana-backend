@@ -13,12 +13,17 @@ const port = process.env.PORT || 3000;
 // --- Security Middleware ---
 app.use(helmet());
 
+// THIS IS THE CORRECTED AND FINAL GUEST LIST
 const whitelist = ['https://inspiring-cranachan-69450a.netlify.app', 'https://www.inspiring-cranachan-69450a.netlify.app', 'https://thebiharimakhana-backend.onrender.com'];
 const corsOptions = {
     origin: function (origin, callback) {
-        if (whitelist.indexOf(origin) !== -1 || !origin) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        if (whitelist.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
+            // If the origin is not in the whitelist, reject the request
             callback(new Error('Not allowed by CORS'));
         }
     }
@@ -105,7 +110,6 @@ app.get('/', (req, res) => {
     res.send('The Bihari Makhana Backend is running!');
 });
 
-// FIXED: Added the missing closing parenthesis ')' here
 app.get('/api/products', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM products ORDER BY created_at DESC');
