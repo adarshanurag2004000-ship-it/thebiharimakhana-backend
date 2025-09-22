@@ -14,7 +14,7 @@ const port = process.env.PORT || 3000;
 app.use(helmet());
 
 // THIS IS THE CORRECTED LINE
-const whitelist = ['https://inspiring-cranachan-69450a.netlify.app', 'https://www.inspiring-cranachan-69450a.netlify.app'];
+const whitelist = ['https://inspiring-cranachan-69450a.netlify.app', 'https://www.inspiring-cranachan-69450a.netlify.app', 'https://thebiharimakhana-backend.onrender.com'];
 
 const corsOptions = {
     origin: function (origin, callback) {
@@ -193,24 +193,4 @@ app.get('/view-orders', async (req, res) => {
                 itemsHtml += `<li>${key} (x${items[key].quantity})</li>`;
             }
             itemsHtml += '</ul>';
-            html += `<tr><td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td></tr>`;
-        });
-        html += '</table>';
-        res.send(html);
-    } catch (err) {
-        console.error('Error fetching orders:', err);
-        res.status(500).send('Internal Server Error');
-    }
-});
-
-// --- Global Error Handler ---
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).send('Something broke!');
-});
-
-// --- Start Server ---
-app.listen(port, () => {
-    console.log(`Server is listening on port ${port}`);
-    setupDatabase();
-});
+            html += `<tr><td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.
