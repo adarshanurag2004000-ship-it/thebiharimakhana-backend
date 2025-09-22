@@ -1,35 +1,28 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const helmet = require('helmet'); // Security: Adds various HTTP security headers
-const rateLimit = require('express-rate-limit'); // Security: Prevents brute-force attacks
-const Joi = require('joi'); // Security: For powerful input validation
-const he = require('he'); // Security: For encoding HTML to prevent XSS attacks
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const Joi = require('joi');
+const he = require('he');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// --- SECURITY ENHANCEMENTS ---
-
-// 1. Use Helmet to set secure HTTP headers
+// --- SECURITY ---
 app.use(helmet());
-
-// 2. Rate Limiting to prevent spam and brute-force attacks
 const limiter = rateLimit({
-	windowMs: 15 * 60 * 1000, // 15 minutes
-	max: 100, // Limit each IP to 100 requests per windowMs
+	windowMs: 15 * 60 * 1000,
+	max: 100,
 	standardHeaders: true,
 	legacyHeaders: false,
     message: 'Too many requests from this IP, please try again after 15 minutes'
 });
-app.use(limiter); // Apply the limiter to all requests
-
-// 3. CORS Whitelist: Only allow your website to communicate with this backend
+app.use(limiter);
 const allowedOrigins = [
-    'https://inspiring-cranachan-69450a.netlify.app', // Your official website URL
-    'http://localhost:3000' // For testing on your computer
+    'https://inspiring-cranachan-69450a.netlify.app',
+    'http://localhost:3000'
 ];
-
 const corsOptions = {
   origin: function (origin, callback) {
     if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
@@ -39,11 +32,11 @@ const corsOptions = {
     }
   }
 };
-
 app.use(cors(corsOptions));
-// --- END OF SECURITY ENHANCEMENTS ---
+// --- END SECURITY ---
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // Middleware to parse form data
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -55,7 +48,6 @@ const pool = new Pool({
 const setupDatabase = async () => {
     const client = await pool.connect();
     try {
-        // Create the 'orders' table if it doesn't exist
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
@@ -69,7 +61,6 @@ const setupDatabase = async () => {
         `);
         console.log('Database table "orders" is ready.');
 
-        // NEW: Create the 'products' table if it doesn't exist
         await client.query(`
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY,
@@ -94,15 +85,19 @@ app.get('/', (req, res) => {
   res.send('The Bihari Makhana backend is running and connected to the database!');
 });
 
-// THIS IS THE SECURED PAGE TO VIEW YOUR ORDERS
-app.get('/view-orders', async (req, res, next) => {
-    const { password } = req.query;
+// --- ADMIN SECTION ---
+
+// Middleware to check admin password
+const checkAdminPassword = (req, res, next) => {
+    const password = req.query.password || req.body.password;
     const adminPassword = process.env.ADMIN_PASSWORD;
-
     if (!adminPassword || password !== adminPassword) {
-        return res.status(401).send('<h1>Access Denied</h1><p>You need a valid password to view this page.</p>');
+        return res.status(401).send('<h1>Access Denied</h1>');
     }
+    next();
+};
 
+app.get('/view-orders', checkAdminPassword, async (req, res, next) => {
     try {
         const client = await pool.connect();
         const result = await client.query('SELECT * FROM orders ORDER BY order_date DESC;');
@@ -111,72 +106,98 @@ app.get('/view-orders', async (req, res, next) => {
 
         let html = `
             <style>
-                body { font-family: sans-serif; margin: 20px; }
-                .order { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 8px; }
-                h1 { color: #F97316; }
-                h2 { border-bottom: 2px solid #eee; padding-bottom: 5px; }
-                pre { background-color: #f4f4f4; padding: 10px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; }
+                body { font-family: sans-serif; margin: 20px; } .order { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 8px; } h1 { color: #F97316; } h2 { border-bottom: 2px solid #eee; padding-bottom: 5px; } pre { background-color: #f4f4f4; padding: 10px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; }
             </style>
-            <h1>The Bihari Makhana - Orders</h1>
-            <p>Found ${orders.length} orders.</p>
+            <h1>The Bihari Makhana - Orders</h1> <p>Found ${orders.length} orders.</p>
         `;
 
         orders.forEach(order => {
-            // Security Enhancement: Encode all user-provided data before displaying it
-            const safePaymentId = he.encode(order.payment_id);
-            const safeCustomerName = he.encode(order.customer_name);
-            const safePhone = he.encode(order.phone);
-            const safeAddress = he.encode(order.address);
-            const safeCartItems = he.encode(JSON.stringify(order.cart_items, null, 2));
-
+            const safePaymentId = he.encode(order.payment_id); const safeCustomerName = he.encode(order.customer_name); const safePhone = he.encode(order.phone); const safeAddress = he.encode(order.address); const safeCartItems = he.encode(JSON.stringify(order.cart_items, null, 2));
             html += `
                 <div class="order">
-                    <h2>Order #${order.id} - ${new Date(order.order_date).toLocaleString()}</h2>
-                    <p><strong>Payment ID:</strong> ${safePaymentId}</p>
-                    <h3>Customer Details:</h3>
-                    <p><strong>Name:</strong> ${safeCustomerName}</p>
-                    <p><strong>Phone:</strong> ${safePhone}</p>
-                    <p><strong>Address:</strong> ${safeAddress}</p>
-                    <h3>Cart Items:</h3>
-                    <pre>${safeCartItems}</pre>
+                    <h2>Order #${order.id} - ${new Date(order.order_date).toLocaleString()}</h2> <p><strong>Payment ID:</strong> ${safePaymentId}</p> <h3>Customer Details:</h3> <p><strong>Name:</strong> ${safeCustomerName}</p> <p><strong>Phone:</strong> ${safePhone}</p> <p><strong>Address:</strong> ${safeAddress}</p> <h3>Cart Items:</h3> <pre>${safeCartItems}</pre>
                 </div>
             `;
         });
-        
         res.send(html);
-
     } catch (err) {
-        next(err); // Pass errors to the central error handler
+        next(err);
     }
 });
 
-// Security Enhancement: Define a strict schema for checkout data
+// Admin page to add products
+app.get('/admin', checkAdminPassword, (req, res) => {
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    res.send(`
+        <style>
+            body { font-family: sans-serif; margin: 40px; background-color: #f9fafb; }
+            .container { max-width: 600px; margin: auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+            h1 { color: #F97316; }
+            label { display: block; margin-top: 20px; font-weight: bold; }
+            input, textarea { width: 100%; padding: 10px; margin-top: 5px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
+            button { background-color: #F97316; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; margin-top: 20px; }
+            button:hover { background-color: #ea580c; }
+        </style>
+        <div class="container">
+            <h1>Admin Control Panel</h1>
+            <h2>Add New Product</h2>
+            <form action="/admin/add-product" method="POST">
+                <input type="hidden" name="password" value="${he.encode(adminPassword)}">
+                
+                <label for="name">Product Name:</label>
+                <input type="text" id="name" name="name" required>
+                
+                <label for="price">Price (e.g., 199.00):</label>
+                <input type="text" id="price" name="price" required>
+                
+                <label for="description">Description:</label>
+                <textarea id="description" name="description" rows="4" required></textarea>
+                
+                <label for="image_url">Image URL:</label>
+                <input type="text" id="image_url" name="image_url" required>
+                
+                <button type="submit">Add Product</button>
+            </form>
+        </div>
+    `);
+});
+
+// Endpoint to handle adding the product
+app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
+    const { name, price, description, image_url } = req.body;
+
+    if (!name || !price || !description || !image_url) {
+        return res.status(400).send('All fields are required.');
+    }
+
+    try {
+        const client = await pool.connect();
+        await client.query(
+            'INSERT INTO products (name, price, description, image_url) VALUES ($1, $2, $3, $4)',
+            [name, parseFloat(price), description, image_url]
+        );
+        client.release();
+        res.send('<h1>Product Added Successfully!</h1><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Add another product</a>');
+    } catch(err) {
+        next(err);
+    }
+});
+
+
+// --- CUSTOMER SECTION ---
 const checkoutSchema = Joi.object({
-    paymentId: Joi.string().trim().required(),
-    cart: Joi.object().min(1).required(),
-    addressDetails: Joi.object({
-        name: Joi.string().trim().min(2).max(100).required(),
-        phone: Joi.string().trim().pattern(/^[0-9]{10,15}$/).required(),
-        address: Joi.string().trim().min(10).max(500).required()
-    }).required()
+    paymentId: Joi.string().trim().required(), cart: Joi.object().min(1).required(), addressDetails: Joi.object({ name: Joi.string().trim().min(2).max(100).required(), phone: Joi.string().trim().pattern(/^[0-9]{10,15}$/).required(), address: Joi.string().trim().min(10).max(500).required() }).required()
 });
 
 app.post('/checkout', async (req, res, next) => {
-    // Security Enhancement: Validate input against the schema
     const { error, value } = checkoutSchema.validate(req.body);
     if (error) {
         console.log("Validation Error:", error.details[0].message);
         return res.status(422).json({ success: false, message: `Invalid input: ${error.details[0].message}` });
     }
-
-    const { cart, addressDetails, paymentId } = value; // Use the validated and sanitized value
-
-    const insertQuery = `
-        INSERT INTO orders (customer_name, phone, address, cart_items, payment_id)
-        VALUES ($1, $2, $3, $4, $5);
-    `;
+    const { cart, addressDetails, paymentId } = value;
+    const insertQuery = `INSERT INTO orders (customer_name, phone, address, cart_items, payment_id) VALUES ($1, $2, $3, $4, $5);`;
     const values = [addressDetails.name, addressDetails.phone, addressDetails.address, cart, paymentId];
-
     try {
         const client = await pool.connect();
         await client.query(insertQuery, values);
@@ -184,17 +205,15 @@ app.post('/checkout', async (req, res, next) => {
         console.log('--- SUCCESS: ORDER SAVED TO DATABASE ---');
         res.json({ success: true, message: "Order saved successfully!" });
     } catch (err) {
-        next(err); // Pass errors to the central error handler
+        next(err);
     }
 });
 
 // --- CENTRAL ERROR HANDLER ---
-// Security Enhancement: A generic error handler to prevent leaking server details
 app.use((err, req, res, next) => {
     console.error('--- UNHANDLED ERROR ---', err.stack);
     res.status(500).json({ success: false, message: 'An unexpected error occurred. Please try again later.' });
 });
-
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
