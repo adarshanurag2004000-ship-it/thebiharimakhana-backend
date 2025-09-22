@@ -20,8 +20,9 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// --- CORS FIX V2 ---
-// Add the backend's own URL to the list of allowed origins, with and without a trailing slash.
+// --- FINAL CORS FIX ---
+// This updated logic explicitly allows the 'null' origin, which browsers send
+// in specific scenarios like a form submission from a page served by this same server.
 const allowedOrigins = [
     'https://inspiring-cranachan-69450a.netlify.app', // Your frontend website
     'https://thebiharimakhana-backend.onrender.com', // Your backend's own address
@@ -33,13 +34,11 @@ const corsOptions = {
     // For debugging: Log the origin the browser is sending
     console.log('CORS check: Origin is', origin);
 
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
+    // If the origin is in our whitelist OR if the origin is null (from our admin page form), allow it.
+    if (allowedOrigins.indexOf(origin) !== -1 || origin === null) {
+      callback(null, true);
     } else {
-      return callback(new Error('Not allowed by CORS'));
+      callback(new Error('Not allowed by CORS'));
     }
   }
 };
