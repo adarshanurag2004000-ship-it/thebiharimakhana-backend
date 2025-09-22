@@ -1,13 +1,30 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const helmet = require('helmet'); // Security: Adds various HTTP security headers
+const rateLimit = require('express-rate-limit'); // Security: Prevents brute-force attacks
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Security Enhancement: Only allow your Netlify website to talk to this backend
+// --- SECURITY ENHANCEMENTS ---
+
+// 1. Use Helmet to set secure HTTP headers
+app.use(helmet());
+
+// 2. Rate Limiting to prevent spam and brute-force attacks
+const limiter = rateLimit({
+	windowMs: 15 * 60 * 1000, // 15 minutes
+	max: 100, // Limit each IP to 100 requests per windowMs
+	standardHeaders: true,
+	legacyHeaders: false,
+    message: 'Too many requests from this IP, please try again after 15 minutes'
+});
+app.use(limiter); // Apply the limiter to all requests
+
+// 3. CORS Whitelist: Only allow your website to communicate with this backend
 const allowedOrigins = [
-    'https://voluble-babka-5fcbfa.netlify.app', // Replace with your actual Netlify URL
+    'https://inspiring-cranachan-69450a.netlify.app', // Your official website URL
     'http://localhost:3000' // For testing on your computer
 ];
 
@@ -22,6 +39,8 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+// --- END OF SECURITY ENHANCEMENTS ---
+
 app.use(express.json());
 
 const pool = new Pool({
@@ -59,16 +78,13 @@ app.get('/', (req, res) => {
 
 // THIS IS THE SECURED PAGE TO VIEW YOUR ORDERS
 app.get('/view-orders', async (req, res) => {
-    // Security Check: Get password from the query ?password=...
     const { password } = req.query;
     const adminPassword = process.env.ADMIN_PASSWORD;
 
-    // If there is no admin password set, or if the provided password is wrong, deny access.
     if (!adminPassword || password !== adminPassword) {
         return res.status(401).send('<h1>Access Denied</h1><p>You need a valid password to view this page.</p>');
     }
 
-    // If password is correct, proceed to show the orders
     try {
         const client = await pool.connect();
         const result = await client.query('SELECT * FROM orders ORDER BY order_date DESC;');
@@ -114,9 +130,15 @@ app.get('/view-orders', async (req, res) => {
 app.post('/checkout', async (req, res) => {
   const { cart, addressDetails, paymentId } = req.body;
   
-  // Security Enhancement: Basic check to ensure data is present
-  if (!cart || !addressDetails || !paymentId) {
-      return res.status(400).json({ success: false, message: "Missing order information."});
+  // Security Enhancement: Basic Input Validation
+  if (!cart || typeof cart !== 'object' || Object.keys(cart).length === 0) {
+      return res.status(400).json({ success: false, message: "Invalid cart data."});
+  }
+  if (!addressDetails || typeof addressDetails.name !== 'string' || typeof addressDetails.phone !== 'string' || typeof addressDetails.address !== 'string') {
+      return res.status(400).json({ success: false, message: "Invalid address details."});
+  }
+  if (!paymentId || typeof paymentId !== 'string') {
+      return res.status(400).json({ success: false, message: "Invalid payment ID."});
   }
 
   const insertQuery = `
