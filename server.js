@@ -12,19 +12,7 @@ const port = process.env.PORT || 3000;
 
 // --- Security Middleware ---
 app.use(helmet());
-
-const whitelist = ['https://inspiring-cranachan-69450a.netlify.app', 'https://www.inspiring-cranachan-69450a.netlify.app', 'https://thebiharimakhana-backend.onrender.com'];
-const corsOptions = {
-    origin: function (origin, callback) {
-        if (!origin) return callback(null, true);
-        if (whitelist.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    }
-};
-app.use(cors(corsOptions));
+app.use(cors());
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -121,9 +109,7 @@ app.post('/save-order', async (req, res) => {
     if (error) {
         return res.status(400).json({ message: `Validation error: ${error.details[0].message}` });
     }
-
     const { addressDetails, cart, order_amount, razorpay_payment_id } = value;
-
     try {
         const query = `
             INSERT INTO orders(customer_name, phone_number, address, cart_items, order_amount, razorpay_payment_id) 
@@ -147,13 +133,29 @@ app.post('/save-order', async (req, res) => {
 });
 
 // --- Admin Routes ---
+
+// NEW: A temporary tool to clear the orders table
+app.get('/admin/clear-orders', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) {
+        return res.status(403).send('Access Denied');
+    }
+    try {
+        await pool.query('DELETE FROM orders;');
+        res.send('<h1>Success! All old orders have been cleared.</h1><p>You can now go to your /view-orders page. It should work correctly.</p><p><a href="/view-orders?password=' + encodeURIComponent(password) + '">Click here to view orders.</a></p>');
+    } catch (err) {
+        console.error('Error clearing orders table:', err);
+        res.status(500).send('An error occurred while trying to clear the orders.');
+    }
+});
+
 app.get('/admin', (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) {
         return res.status(403).send('Access Denied');
     }
     res.send(`
-        <!DOCTYPE html><html lang="en"><head><title>Admin Panel</title><style>body{font-family:Arial,sans-serif;background-color:#f4f4f9;margin:40px}.container{max-width:600px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1)}h1{color:#333}label{display:block;margin-top:10px;color:#555}input,textarea{width:100%;padding:10px;margin-top:5px;border-radius:4px;border:1px solid #ddd;box-sizing:border-box}button{background-color:#007bff;color:#fff;padding:10px 15px;border:none;border-radius:4px;cursor:pointer;font-size:16px;margin-top:20px}button:hover{background-color:#0056b3}</style></head><body><div class="container"><h1>Admin Control Panel</h1><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><h2>Add New Product</h2><label for="productName">Product Name:</label><input type="text" id="productName" name="productName" required><label for="price">Price (INR):</label><input type="number" id="price" name="price" step="0.01" required><label for="description">Description:</label><textarea id="description" name="description" rows="4" required></textarea><label for="imageUrl">Image URL:</label><input type="text" id="imageUrl" name="imageUrl" required><button type="submit">Add Product</button></form></div></body></html>
+        <!DOCTYPE html><html lang="en"><head><title>Admin Panel</title><style>body{font-family:Arial,sans-serif;background-color:#f4f4f;margin:40px}.container{max-width:600px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1)}h1{color:#333}label{display:block;margin-top:10px;color:#555}input,textarea{width:100%;padding:10px;margin-top:5px;border-radius:4px;border:1px solid #ddd;box-sizing:border-box}button{background-color:#007bff;color:#fff;padding:10px 15px;border:none;border-radius:4px;cursor:pointer;font-size:16px;margin-top:20px}button:hover{background-color:#0056b3}</style></head><body><div class="container"><h1>Admin Control Panel</h1><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><h2>Add New Product</h2><label for="productName">Product Name:</label><input type="text" id="productName" name="productName" required><label for="price">Price (INR):</label><input type="number" id="price" name="price" step="0.01" required><label for="description">Description:</label><textarea id="description" name="description" rows="4" required></textarea><label for="imageUrl">Image URL:</label><input type="text" id="imageUrl" name="imageUrl" required><button type="submit">Add Product</button></form></div></body></html>
     `);
 });
 
@@ -208,7 +210,6 @@ app.get('/view-orders', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
-
 
 // --- Global Error Handler ---
 app.use((err, req, res, next) => {
