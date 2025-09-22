@@ -15,13 +15,14 @@ app.get('/', (req, res) => {
   res.send('The Bihari Makhana backend is running!');
 });
 
-// The "Waiter" that listens for orders
+// The "Waiter" that listens for orders AFTER payment
 app.post('/checkout', (req, res) => {
-  // NOW we expect both the cart AND the address details
-  const { cart, addressDetails } = req.body; 
+  // NOW we expect the cart, address, AND the payment ID from Razorpay
+  const { cart, addressDetails, paymentId } = req.body; 
   
-  console.log("--- NEW FULL ORDER RECEIVED ---");
+  console.log("--- NEW PAYMENT & ORDER RECEIVED ---");
   console.log("Timestamp:", new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }));
+  console.log("Razorpay Payment ID:", paymentId);
   console.log("--- Customer Details ---");
   console.log("Name:", addressDetails.name);
   console.log("Phone:", addressDetails.phone);
@@ -29,9 +30,15 @@ app.post('/checkout', (req, res) => {
   console.log("--- Items in Cart ---");
   console.log(cart);
   
-  // In the future, you would save all this to a database.
+  // ================== IMPORTANT SECURITY STEP ==================
+  // In a real production system, you would add code here to:
+  // 1. Get your Razorpay Key Secret from a secure place.
+  // 2. Use that secret to verify the payment signature sent by Razorpay.
+  // 3. If the signature is valid, save the order to your database.
+  // 4. If the signature is invalid, you would reject the order.
+  // =============================================================
   
-  res.json({ success: true, message: "Order received successfully!" });
+  res.json({ success: true, message: "Order and Payment ID received successfully!" });
   console.log("--- ORDER PROCESSED ---");
 });
 
