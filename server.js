@@ -38,7 +38,9 @@ async function setupDatabase() {
                 price NUMERIC(10, 2) NOT NULL,
                 description TEXT,
                 image_url VARCHAR(2048),
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                sale_price NUMERIC(10, 2),
+                stock_quantity INTEGER NOT NULL DEFAULT 10
             );
         `);
         console.log('"products" table is ready.');
@@ -66,7 +68,6 @@ async function setupDatabase() {
 // --- Validation Schemas ---
 const productSchema = Joi.object({
     productName: Joi.string().min(3).max(100).required(),
-    // THIS LINE IS NOW FIXED
     price: Joi.number().positive().precision(2).required(),
     description: Joi.string().min(10).max(1000).required(),
     imageUrl: Joi.string().uri().max(2048).required()
@@ -93,64 +94,85 @@ app.get('/api/products', async (req, res) => {
 });
 
 // --- Admin Routes ---
-app.get('/admin/fix-products-table', async (req, res) => {
+
+// The NEW main admin dashboard
+app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) {
         return res.status(403).send('Access Denied');
     }
-    const client = await pool.connect();
-    try {
-        await client.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_price NUMERIC(10, 2);');
-        await client.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_quantity INTEGER NOT NULL DEFAULT 10;');
-        
-        res.send('<h1>Success! The products table has been upgraded.</h1><p>The `sale_price` and `stock_quantity` columns have been added. You are ready for the next features.</p>');
-    } catch (err) {
-        console.error('Error fixing products table:', err);
-        res.status(500).send('An error occurred while upgrading the products table.');
-    } finally {
-        client.release();
-    }
-});
 
-
-app.get('/admin/fix-database', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) {
-        return res.status(403).send('Access Denied');
-    }
-    const client = await pool.connect();
     try {
-        await client.query('DROP TABLE IF EXISTS orders;');
-        await client.query(`
-            CREATE TABLE orders (
-                id SERIAL PRIMARY KEY,
-                customer_name VARCHAR(255) NOT NULL,
-                phone_number VARCHAR(20) NOT NULL,
-                address TEXT NOT NULL,
-                cart_items JSONB,
-                order_amount NUMERIC(10, 2) NOT NULL,
-                razorpay_payment_id VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
+        const { rows } = await pool.query('SELECT * FROM products ORDER BY id ASC');
+        let productsHtml = rows.map(p => `
+            <tr>
+                <td>${p.id}</td>
+                <td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td>
+                <td>${he.encode(p.name)}</td>
+                <td>${p.price}</td>
+                <td>${p.sale_price || 'N/A'}</td>
+                <td>${p.stock_quantity}</td>
+                <td>
+                    <button>Edit</button>
+                    <button>Delete</button>
+                </td>
+            </tr>
+        `).join('');
+
+        res.send(`
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <title>Manage Products</title>
+                <style>
+                    body { font-family: sans-serif; margin: 2em; }
+                    table { border-collapse: collapse; width: 100%; }
+                    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                    th { background-color: #f2f2f2; }
+                    tr:nth-child(even) { background-color: #f9f9f9; }
+                    img { max-width: 50px; height: auto; }
+                    .add-form { margin-top: 2em; padding: 1em; border: 1px solid #ddd; }
+                </style>
+            </head>
+            <body>
+                <h1>Manage Products</h1>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Image</th>
+                            <th>Name</th>
+                            <th>Price</th>
+                            <th>Sale Price</th>
+                            <th>Stock</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${productsHtml}
+                    </tbody>
+                </table>
+
+                <div class="add-form">
+                    <h2>Add New Product</h2>
+                    <form action="/add-product?password=${encodeURIComponent(password)}" method="POST">
+                        <p><label>Name: <input name="productName" required></label></p>
+                        <p><label>Price (e.g., 199.00): <input name="price" type="number" step="0.01" required></label></p>
+                        <p><label>Description: <textarea name="description" required></textarea></label></p>
+                        <p><label>Image URL: <input name="imageUrl" required></label></p>
+                        <button type="submit">Add Product</button>
+                    </form>
+                </div>
+            </body>
+            </html>
         `);
-        res.send('<h1>Success! The orders table has been completely rebuilt.</h1><p>The error is now permanently fixed. Please try your /view-orders page again.</p><p><a href="/view-orders?password=' + encodeURIComponent(password) + '">Click here to verify.</a></p>');
     } catch (err) {
-        console.error('Error fixing database:', err);
-        res.status(500).send('An error occurred while fixing the database.');
-    } finally {
-        client.release();
+        console.error('Error fetching products for admin:', err);
+        res.status(500).send('Error loading product management page.');
     }
 });
 
-app.get('/admin', (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) {
-        return res.status(403).send('Access Denied');
-    }
-    res.send(`
-        <!DOCTYPE html><html lang="en"><head><title>Admin Panel</title></head><body><h1>Admin Control Panel</h1><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><h2>Add New Product</h2><label>Name:</label><input name="productName" required><br><label>Price:</label><input name="price" type="number" step="0.01" required><br><label>Description:</label><textarea name="description" required></textarea><br><label>Image URL:</label><input name="imageUrl" required><br><button type="submit">Add Product</button></form></body></html>
-    `);
-});
 
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
@@ -163,7 +185,8 @@ app.post('/add-product', async (req, res) => {
     }
     try {
         await pool.query('INSERT INTO products(name, price, description, image_url) VALUES($1, $2, $3, $4)', [value.productName, value.price, value.description, value.imageUrl]);
-        res.send(`<h1>Product Added!</h1><a href="/admin?password=${encodeURIComponent(password)}">Go Back</a>`);
+        // Redirect back to the new products management page
+        res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
     } catch (err) {
         res.status(500).send('Error adding product.');
     }
@@ -196,6 +219,7 @@ app.get('/view-orders', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
+
 
 app.use((err, req, res, next) => {
     console.error(err.stack);
