@@ -55,6 +55,7 @@ const pool = new Pool({
 const setupDatabase = async () => {
     const client = await pool.connect();
     try {
+        // Create the 'orders' table if it doesn't exist
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
@@ -67,8 +68,23 @@ const setupDatabase = async () => {
             );
         `);
         console.log('Database table "orders" is ready.');
+
+        // NEW: Create the 'products' table if it doesn't exist
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS products (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                price NUMERIC(10, 2) NOT NULL,
+                image_url VARCHAR(255) NOT NULL,
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+        console.log('Database table "products" is ready.');
+
     } catch (err) {
-        console.error('Error setting up database table:', err);
+        console.error('Error setting up database tables:', err);
     } finally {
         client.release();
     }
