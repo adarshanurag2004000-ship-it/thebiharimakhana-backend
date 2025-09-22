@@ -12,8 +12,6 @@ const port = process.env.PORT || 3000;
 
 // --- Security Middleware ---
 app.use(helmet());
-
-// WARNING: This allows requests from ANY origin.
 app.use(cors());
 
 const limiter = rateLimit({
@@ -58,7 +56,7 @@ async function setupDatabase() {
                 customer_name VARCHAR(255) NOT NULL,
                 phone_number VARCHAR(20) NOT NULL,
                 address TEXT NOT NULL,
-                cart_items JSONB NOT NULL,
+                cart_items JSONB,
                 order_amount NUMERIC(10, 2) NOT NULL,
                 razorpay_payment_id VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -175,15 +173,22 @@ app.get('/view-orders', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
         let html = `<style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f2f2f2}tr:nth-child(even){background-color:#f9f9f9}td pre{white-space:pre-wrap;word-wrap:break-word;background:#eee;padding:5px;border-radius:3px}</style><h1>All Orders</h1><table><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Payment ID</th><th>Date</th><th>Items</th></tr>`;
+        
         rows.forEach(order => {
-            const items = JSON.parse(order.cart_items);
-            let itemsHtml = '<ul>';
-            for (const key in items) {
-                itemsHtml += `<li>${key} (x${items[key].quantity})</li>`;
+            let itemsHtml = 'N/A';
+            if (order.cart_items) {
+                const items = (typeof order.cart_items === 'string') ? JSON.parse(order.cart_items) : order.cart_items;
+                let list = '<ul>';
+                for (const key in items) {
+                    list += `<li>${he.encode(key)} (x${items[key].quantity})</li>`;
+                }
+                list += '</ul>';
+                itemsHtml = list;
             }
-            itemsHtml += '</ul>';
+
             html += `<tr><td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td></tr>`;
         });
+        
         html += '</table>';
         res.send(html);
     } catch (err) {
@@ -191,6 +196,7 @@ app.get('/view-orders', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
+
 
 // --- Global Error Handler ---
 app.use((err, req, res, next) => {
