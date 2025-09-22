@@ -1,0 +1,14 @@
+{
+  "name": "thebiharimakhana-backend",
+  "version": "1.0.0",
+  "description": "Backend for the e-commerce site.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.1.9",
+    "cors": "^2.8.5"
+  }
+}
+
