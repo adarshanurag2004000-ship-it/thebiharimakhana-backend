@@ -20,22 +20,27 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// --- FINAL CORS FIX ---
+// This updated logic explicitly handles the 'null' origin and adds a pre-flight handler.
 const allowedOrigins = [
     'https://inspiring-cranachan-69450a.netlify.app', // Your frontend website
     'https://thebiharimakhana-backend.onrender.com', // Your backend's own address
-    'http://localhost:3000' // For testing on your computer
+    'http://localhost:3000'
 ];
 
 const corsOptions = {
   origin: function (origin, callback) {
-    console.log('CORS check: Origin is', origin);
-    if (allowedOrigins.indexOf(origin) !== -1 || origin === null || !origin) {
+    if (allowedOrigins.indexOf(origin) !== -1 || !origin || origin === 'null') {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   }
 };
+
+// This handles the special 'pre-flight' request that browsers send.
+app.options('*', cors(corsOptions));
+
 app.use(cors(corsOptions));
 // --- END SECURITY ---
 
@@ -95,7 +100,7 @@ const checkAdminPassword = (req, res, next) => {
     const password = req.query.password || req.body.password;
     const adminPassword = process.env.ADMIN_PASSWORD;
     if (!adminPassword || password !== adminPassword) {
-        return res.status(401).send('<h1>Access Denied</h1><p>Password is missing or incorrect. Make sure you have set the ADMIN_PASSWORD environment variable on Render.</p>');
+        return res.status(401).send('<h1>Access Denied</h1><p>Password is missing or incorrect.</p>');
     }
     next();
 };
@@ -172,7 +177,7 @@ app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
         return res.status(400).send('<h1>Error</h1><p>All fields are required.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
     }
     if (isNaN(parsedPrice) || parsedPrice <= 0) {
-        return res.status(400).send('<h1>Error</h1><p>Price must be a valid positive number (e.g., 199.50).</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
+        return res.status(400).send('<h1>Error</h1><p>Price must be a valid positive number.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
     }
 
     try {
@@ -185,7 +190,7 @@ app.post('/admin/add-product', checkAdminPassword, async (req, res, next) => {
         res.send('<h1>Product Added Successfully!</h1><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Add another product</a>');
     } catch(err) {
         console.error('--- DATABASE ERROR SAVING PRODUCT ---', err);
-        res.status(500).send('<h1>Error Saving Product</h1><p>There was a problem saving the product to the database. Please check the server logs for the detailed error message.</p><a href="/admin?password=' + he.encode(process.env.ADMIN_PASSWORD) + '">Go Back</a>');
+        res.status(500).send('<h1>Error Saving Product</h1><p>There was a problem saving the product to the database.</p>');
     }
 });
 
@@ -204,7 +209,6 @@ const checkoutSchema = Joi.object({
 app.post('/checkout', async (req, res, next) => {
     const { error, value } = checkoutSchema.validate(req.body);
     if (error) {
-        console.log("Validation Error:", error.details[0].message);
         return res.status(422).json({ success: false, message: `Invalid input: ${error.details[0].message}` });
     }
 
@@ -219,7 +223,6 @@ app.post('/checkout', async (req, res, next) => {
         const client = await pool.connect();
         await client.query(insertQuery, values);
         client.release();
-        console.log('--- SUCCESS: ORDER SAVED TO DATABASE ---');
         res.json({ success: true, message: "Order saved successfully!" });
     } catch (err) {
         next(err);
@@ -229,7 +232,7 @@ app.post('/checkout', async (req, res, next) => {
 // --- CENTRAL ERROR HANDLER ---
 app.use((err, req, res, next) => {
     console.error('--- UNHANDLED ERROR ---', err.stack);
-    res.status(500).json({ success: false, message: 'An unexpected error occurred. Please try again later.' });
+    res.status(500).json({ success: false, message: 'An unexpected error occurred.' });
 });
 
 
