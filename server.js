@@ -95,7 +95,7 @@ app.get('/api/products', async (req, res) => {
 
 // --- Admin Routes ---
 
-// The NEW main admin dashboard
+// The main admin dashboard
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) {
@@ -114,7 +114,9 @@ app.get('/admin/products', async (req, res) => {
                 <td>${p.stock_quantity}</td>
                 <td>
                     <button>Edit</button>
-                    <button>Delete</button>
+                    <form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
+                        <button type="submit" onclick="return confirm('Are you sure you want to delete this product?');">Delete</button>
+                    </form>
                 </td>
             </tr>
         `).join('');
@@ -173,6 +175,23 @@ app.get('/admin/products', async (req, res) => {
     }
 });
 
+// THIS IS THE NEW ROUTE TO HANDLE THE DELETE REQUEST
+app.post('/admin/delete-product/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) {
+        return res.status(403).send('Access Denied');
+    }
+    try {
+        const { id } = req.params;
+        await pool.query('DELETE FROM products WHERE id = $1', [id]);
+        // Redirect back to the products management page after deletion
+        res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error('Error deleting product:', err);
+        res.status(500).send('Error deleting product.');
+    }
+});
+
 
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
@@ -185,7 +204,6 @@ app.post('/add-product', async (req, res) => {
     }
     try {
         await pool.query('INSERT INTO products(name, price, description, image_url) VALUES($1, $2, $3, $4)', [value.productName, value.price, value.description, value.imageUrl]);
-        // Redirect back to the new products management page
         res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
     } catch (err) {
         res.status(500).send('Error adding product.');
