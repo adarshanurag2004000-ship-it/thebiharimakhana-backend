@@ -1,15 +1,13 @@
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg'); // Our new database tool
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Use CORS to allow our website to talk to the backend
 app.use(cors());
 app.use(express.json());
 
-// Create a connection to our database using the secret key
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -17,7 +15,6 @@ const pool = new Pool({
   }
 });
 
-// A function to set up our database table the first time the server starts
 const setupDatabase = async () => {
     const client = await pool.connect();
     try {
@@ -40,29 +37,58 @@ const setupDatabase = async () => {
     }
 };
 
-
-// Main page of the backend
 app.get('/', (req, res) => {
   res.send('The Bihari Makhana backend is running and connected to the database!');
 });
 
-// The checkout function, now upgraded to save to the database
+// THIS IS THE NEW PAGE TO VIEW YOUR ORDERS
+app.get('/view-orders', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        // Get all orders, with the newest ones first
+        const result = await client.query('SELECT * FROM orders ORDER BY order_date DESC;');
+        const orders = result.rows;
+        client.release();
+
+        // Create a simple HTML page to display the orders
+        let html = `
+            <style>
+                body { font-family: sans-serif; margin: 20px; }
+                .order { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 8px; }
+                h1 { color: #F97316; }
+                h2 { border-bottom: 2px solid #eee; padding-bottom: 5px; }
+                pre { background-color: #f4f4f4; padding: 10px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; }
+            </style>
+            <h1>The Bihari Makhana - Orders</h1>
+            <p>Found ${orders.length} orders.</p>
+        `;
+
+        orders.forEach(order => {
+            html += `
+                <div class="order">
+                    <h2>Order #${order.id} - ${new Date(order.order_date).toLocaleString()}</h2>
+                    <p><strong>Payment ID:</strong> ${order.payment_id}</p>
+                    <h3>Customer Details:</h3>
+                    <p><strong>Name:</strong> ${order.customer_name}</p>
+                    <p><strong>Phone:</strong> ${order.phone}</p>
+                    <p><strong>Address:</strong> ${order.address}</p>
+                    <h3>Cart Items:</h3>
+                    <pre>${JSON.stringify(order.cart_items, null, 2)}</pre>
+                </div>
+            `;
+        });
+        
+        res.send(html);
+
+    } catch (err) {
+        console.error('Error fetching orders:', err);
+        res.status(500).send('<h1>Error</h1><p>Could not fetch orders from the database.</p>');
+    }
+});
+
+
 app.post('/checkout', async (req, res) => {
   const { cart, addressDetails, paymentId } = req.body;
-
-  console.log('--- NEW FULL ORDER RECEIVED ---');
-  console.log(`Timestamp: ${new Date().toLocaleString()}`);
-  console.log('--- Customer Details ---');
-  console.log(`Name: ${addressDetails.name}`);
-  console.log(`Phone: ${addressDetails.phone}`);
-  console.log(`Address: ${addressDetails.address}`);
-  console.log('--- Items in Cart ---');
-  console.log(cart);
-  console.log('--- Payment ID ---');
-  console.log(paymentId);
-  console.log('--- ATTEMPTING TO SAVE TO DATABASE ---');
-
-  // The SQL command to insert the order into our filing cabinet
   const insertQuery = `
     INSERT INTO orders (customer_name, phone, address, cart_items, payment_id)
     VALUES ($1, $2, $3, $4, $5);
@@ -76,15 +102,13 @@ app.post('/checkout', async (req, res) => {
     console.log('--- SUCCESS: ORDER SAVED TO DATABASE ---');
     res.json({ success: true, message: "Order saved successfully!" });
   } catch (err) {
-    console.error('--- ERROR: FAILED TO SAVE ORDER TO DATABASE ---');
-    console.error(err);
+    console.error('--- ERROR: FAILED TO SAVE ORDER TO DATABASE ---', err);
     res.status(500).json({ success: false, message: "Failed to save order." });
   }
 });
 
-// Start the server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-  setupDatabase(); // Set up the database as soon as the server starts
+  setupDatabase();
 });
 
