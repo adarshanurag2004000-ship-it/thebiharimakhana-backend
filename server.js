@@ -3,7 +3,6 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
-// Use the PORT environment variable Render provides, or 3001 for local testing
 const port = process.env.PORT || 3001;
 
 // Allow our website to talk to this backend
@@ -16,18 +15,22 @@ app.get('/', (req, res) => {
   res.send('The Bihari Makhana backend is running!');
 });
 
-// THIS IS THE NEW PART: The "Waiter" that listens for orders
-// When the website sends an order to '/checkout', this code will run
+// The "Waiter" that listens for orders
 app.post('/checkout', (req, res) => {
-  const cart = req.body.cart;
-  console.log("--- NEW ORDER RECEIVED ---");
+  // NOW we expect both the cart AND the address details
+  const { cart, addressDetails } = req.body; 
+  
+  console.log("--- NEW FULL ORDER RECEIVED ---");
   console.log("Timestamp:", new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }));
-  console.log("Items in cart:", cart);
+  console.log("--- Customer Details ---");
+  console.log("Name:", addressDetails.name);
+  console.log("Phone:", addressDetails.phone);
+  console.log("Address:", addressDetails.address);
+  console.log("--- Items in Cart ---");
+  console.log(cart);
   
-  // Here, in the future, you would add code to save the order to a database
-  // and process the payment with Razorpay.
+  // In the future, you would save all this to a database.
   
-  // For now, we just log the order and send a success message back.
   res.json({ success: true, message: "Order received successfully!" });
   console.log("--- ORDER PROCESSED ---");
 });
