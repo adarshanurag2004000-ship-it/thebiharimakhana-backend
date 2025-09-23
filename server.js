@@ -59,10 +59,11 @@ async function setupDatabase() {
         `);
         console.log('"orders" table is ready.');
         
+        // MODIFIED: users table now stores email instead of phone_number
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
-                phone_number VARCHAR(20) UNIQUE NOT NULL,
+                email VARCHAR(255) UNIQUE NOT NULL,
                 firebase_uid VARCHAR(255) UNIQUE NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
@@ -184,29 +185,25 @@ app.post('/checkout', async (req, res) => {
     }
 });
 
-// ==========================================================
-// ===== START OF NEW CODE =====
-// ==========================================================
+// MODIFIED: This route now accepts email instead of phoneNumber
 app.post('/api/user-login', async (req, res) => {
-    const { phoneNumber, uid } = req.body;
+    const { email, uid } = req.body;
 
-    if (!phoneNumber || !uid) {
-        return res.status(400).json({ error: 'Phone number and UID are required.' });
+    if (!email || !uid) {
+        return res.status(400).json({ error: 'Email and UID are required.' });
     }
 
     try {
-        // Check if user already exists
         const existingUser = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
 
         if (existingUser.rows.length === 0) {
-            // If user does not exist, insert them
             await pool.query(
-                'INSERT INTO users (phone_number, firebase_uid) VALUES ($1, $2)',
-                [phoneNumber, uid]
+                'INSERT INTO users (email, firebase_uid) VALUES ($1, $2)',
+                [email, uid]
             );
-            console.log('New user created:', phoneNumber);
+            console.log('New user created:', email);
         } else {
-            console.log('Existing user logged in:', phoneNumber);
+            console.log('Existing user logged in:', email);
         }
         
         res.status(200).json({ success: true, message: 'User session handled.' });
@@ -216,10 +213,6 @@ app.post('/api/user-login', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
-// ==========================================================
-// ===== END OF NEW CODE =====
-// ==========================================================
-
 
 // --- Admin Routes ---
 // (The rest of your admin routes remain unchanged)
