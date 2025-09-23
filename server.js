@@ -58,10 +58,7 @@ async function setupDatabase() {
             );
         `);
         console.log('"orders" table is ready.');
-
-        // ==========================================================
-        // ===== START OF NEW CODE =====
-        // ==========================================================
+        
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -71,9 +68,6 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
-        // ==========================================================
-        // ===== END OF NEW CODE =====
-        // ==========================================================
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -106,7 +100,6 @@ app.get('/', async (req, res) => {
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort } = req.query;
-
         let query = 'SELECT * FROM products WHERE stock_quantity > 0';
         const queryParams = [];
 
@@ -117,18 +110,10 @@ app.get('/api/products', async (req, res) => {
 
         let orderByClause = ' ORDER BY created_at DESC';
         switch (sort) {
-            case 'price-asc':
-                orderByClause = ' ORDER BY COALESCE(sale_price, price) ASC';
-                break;
-            case 'price-desc':
-                orderByClause = ' ORDER BY COALESCE(sale_price, price) DESC';
-                break;
-            case 'name-asc':
-                orderByClause = ' ORDER BY name ASC';
-                break;
-            case 'name-desc':
-                orderByClause = ' ORDER BY name DESC';
-                break;
+            case 'price-asc': orderByClause = ' ORDER BY COALESCE(sale_price, price) ASC'; break;
+            case 'price-desc': orderByClause = ' ORDER BY COALESCE(sale_price, price) DESC'; break;
+            case 'name-asc': orderByClause = ' ORDER BY name ASC'; break;
+            case 'name-desc': orderByClause = ' ORDER BY name DESC'; break;
         }
         query += orderByClause;
 
@@ -154,11 +139,7 @@ app.post('/api/calculate-total', (req, res) => {
     }
     const shippingCost = subtotal >= 500 ? 0 : 99;
     const total = subtotal + shippingCost;
-    res.json({
-      subtotal: subtotal,
-      shippingCost: shippingCost,
-      total: total
-    });
+    res.json({ subtotal: subtotal, shippingCost: shippingCost, total: total });
 });
 
 app.post('/checkout', async (req, res) => {
@@ -203,6 +184,43 @@ app.post('/checkout', async (req, res) => {
     }
 });
 
+// ==========================================================
+// ===== START OF NEW CODE =====
+// ==========================================================
+app.post('/api/user-login', async (req, res) => {
+    const { phoneNumber, uid } = req.body;
+
+    if (!phoneNumber || !uid) {
+        return res.status(400).json({ error: 'Phone number and UID are required.' });
+    }
+
+    try {
+        // Check if user already exists
+        const existingUser = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
+
+        if (existingUser.rows.length === 0) {
+            // If user does not exist, insert them
+            await pool.query(
+                'INSERT INTO users (phone_number, firebase_uid) VALUES ($1, $2)',
+                [phoneNumber, uid]
+            );
+            console.log('New user created:', phoneNumber);
+        } else {
+            console.log('Existing user logged in:', phoneNumber);
+        }
+        
+        res.status(200).json({ success: true, message: 'User session handled.' });
+
+    } catch (err) {
+        console.error('Error in user-login endpoint:', err);
+        res.status(500).json({ error: 'Internal server error.' });
+    }
+});
+// ==========================================================
+// ===== END OF NEW CODE =====
+// ==========================================================
+
+
 // --- Admin Routes ---
 // (The rest of your admin routes remain unchanged)
 app.get('/admin/products', async (req, res) => {
@@ -237,9 +255,7 @@ app.get('/admin/edit-product/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const { rows } = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
-        if (rows.length === 0) {
-            return res.status(404).send('Product not found.');
-        }
+        if (rows.length === 0) { return res.status(404).send('Product not found.'); }
         const p = rows[0];
         res.send(`<!DOCTYPE html><html lang="en"><head><title>Edit Product</title><style>body{font-family:sans-serif;margin:2em}label,input,textarea{display:block;width:300px;margin-bottom:1em}</style></head><body><h1>Edit Product: ${he.encode(p.name)}</h1><form action="/admin/update-product/${p.id}?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" value="${he.encode(p.name)}" required></label></p><p><label>Price (e.g., 199.00): <input name="price" type="number" step="0.01" value="${p.price}" required></label></p><p><label>Sale Price (optional): <input name="salePrice" type="number" step="0.01" value="${p.sale_price || ''}"></label></p><p><label>Stock Quantity: <input name="stockQuantity" type="number" value="${p.stock_quantity}" required></label></p><p><label>Description: <textarea name="description" required>${he.encode(p.description)}</textarea></label></p><p><label>Image URL: <input name="imageUrl" value="${p.image_url}" required></label></p><button type="submit">Update Product</button></form></body></html>`);
     } catch (err) {
@@ -251,9 +267,7 @@ app.post('/admin/update-product/:id', async (req, res) => {
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { id } = req.params;
     const { error, value } = productSchema.validate(req.body);
-    if (error) {
-        return res.status(400).send(error.details[0].message);
-    }
+    if (error) { return res.status(400).send(error.details[0].message); }
     try {
         await pool.query(
             'UPDATE products SET name = $1, price = $2, description = $3, image_url = $4, sale_price = $5, stock_quantity = $6 WHERE id = $7',
@@ -278,9 +292,7 @@ app.post('/add-product', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { error, value } = productSchema.validate(req.body);
-    if (error) {
-        return res.status(400).send(error.details[0].message);
-    }
+    if (error) { return res.status(400).send(error.details[0].message); }
     try {
         await pool.query(
             'INSERT INTO products(name, price, sale_price, stock_quantity, description, image_url) VALUES($1, $2, $3, $4, $5, $6)',
