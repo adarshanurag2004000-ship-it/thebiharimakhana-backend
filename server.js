@@ -59,7 +59,6 @@ async function setupDatabase() {
         `);
         console.log('"orders" table is ready.');
         
-        // MODIFIED: users table now stores email instead of phone_number
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -69,9 +68,10 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
-
+        return 'Database setup completed successfully!';
     } catch (err) {
         console.error('Error setting up database tables:', err);
+        throw err;
     } finally {
         client.release();
     }
@@ -95,6 +95,22 @@ app.get('/', async (req, res) => {
         client.release();
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
+    }
+});
+
+// ==========================================================
+// ===== NEW DATABASE SETUP ROUTE FOR TESTING =====
+// ==========================================================
+app.get('/admin/setup-db', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { 
+        return res.status(403).send('Access Denied'); 
+    }
+    try {
+        const message = await setupDatabase();
+        res.send(message);
+    } catch (err) {
+        res.status(500).send('Error during database setup: ' + err.message);
     }
 });
 
@@ -185,17 +201,13 @@ app.post('/checkout', async (req, res) => {
     }
 });
 
-// MODIFIED: This route now accepts email instead of phoneNumber
 app.post('/api/user-login', async (req, res) => {
     const { email, uid } = req.body;
-
     if (!email || !uid) {
         return res.status(400).json({ error: 'Email and UID are required.' });
     }
-
     try {
         const existingUser = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
-
         if (existingUser.rows.length === 0) {
             await pool.query(
                 'INSERT INTO users (email, firebase_uid) VALUES ($1, $2)',
@@ -205,9 +217,7 @@ app.post('/api/user-login', async (req, res) => {
         } else {
             console.log('Existing user logged in:', email);
         }
-        
         res.status(200).json({ success: true, message: 'User session handled.' });
-
     } catch (err) {
         console.error('Error in user-login endpoint:', err);
         res.status(500).json({ error: 'Internal server error.' });
@@ -215,7 +225,6 @@ app.post('/api/user-login', async (req, res) => {
 });
 
 // --- Admin Routes ---
-// (The rest of your admin routes remain unchanged)
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -326,5 +335,5 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
     console.log(`Server is listening on port ${port}`);
-    setupDatabase();
+    // We removed setupDatabase() from here to prevent it from running on every start
 });
