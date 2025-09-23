@@ -58,6 +58,23 @@ async function setupDatabase() {
             );
         `);
         console.log('"orders" table is ready.');
+
+        // ==========================================================
+        // ===== START OF NEW CODE =====
+        // ==========================================================
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                phone_number VARCHAR(20) UNIQUE NOT NULL,
+                firebase_uid VARCHAR(255) UNIQUE NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log('"users" table is ready.');
+        // ==========================================================
+        // ===== END OF NEW CODE =====
+        // ==========================================================
+
     } catch (err) {
         console.error('Error setting up database tables:', err);
     } finally {
@@ -86,9 +103,6 @@ app.get('/', async (req, res) => {
     }
 });
 
-// ==========================================================
-// ===== START OF MODIFIED /api/products ROUTE =====
-// ==========================================================
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort } = req.query;
@@ -96,14 +110,12 @@ app.get('/api/products', async (req, res) => {
         let query = 'SELECT * FROM products WHERE stock_quantity > 0';
         const queryParams = [];
 
-        // Handle Search
         if (search) {
             query += ` AND (name ILIKE $${queryParams.length + 1} OR description ILIKE $${queryParams.length + 1})`;
             queryParams.push(`%${search}%`);
         }
 
-        // Handle Sort
-        let orderByClause = ' ORDER BY created_at DESC'; // Default sort
+        let orderByClause = ' ORDER BY created_at DESC';
         switch (sort) {
             case 'price-asc':
                 orderByClause = ' ORDER BY COALESCE(sale_price, price) ASC';
@@ -127,17 +139,12 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
-// ==========================================================
-// ===== END OF MODIFIED /api/products ROUTE =====
-// ==========================================================
 
 app.post('/api/calculate-total', (req, res) => {
     const { cart } = req.body;
-
     if (!cart || Object.keys(cart).length === 0) {
       return res.status(400).json({ error: 'Cart data is missing or empty.' });
     }
-  
     let subtotal = 0;
     for (const productName in cart) {
       const item = cart[productName];
@@ -145,10 +152,8 @@ app.post('/api/calculate-total', (req, res) => {
           subtotal += item.price * item.quantity;
       }
     }
-  
     const shippingCost = subtotal >= 500 ? 0 : 99;
     const total = subtotal + shippingCost;
-  
     res.json({
       subtotal: subtotal,
       shippingCost: shippingCost,
@@ -158,11 +163,9 @@ app.post('/api/calculate-total', (req, res) => {
 
 app.post('/checkout', async (req, res) => {
     const { cart, addressDetails, paymentId } = req.body;
-
     if (!cart || !addressDetails || !paymentId || Object.keys(cart).length === 0) {
         return res.status(400).json({ success: false, message: 'Missing required order information.' });
     }
-
     const addressSchema = Joi.object({
         name: Joi.string().required(),
         phone: Joi.string().required(),
@@ -172,7 +175,6 @@ app.post('/checkout', async (req, res) => {
     if (error) {
         return res.status(400).json({ success: false, message: `Invalid address details: ${error.details[0].message}` });
     }
-
     try {
         let subtotal = 0;
         for (const productName in cart) {
@@ -181,7 +183,6 @@ app.post('/checkout', async (req, res) => {
         }
         const shippingCost = subtotal >= 500 ? 0 : 99;
         const totalAmount = subtotal + shippingCost;
-
         const query = `
             INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, razorpay_payment_id)
             VALUES ($1, $2, $3, $4, $5, $6)
@@ -194,20 +195,16 @@ app.post('/checkout', async (req, res) => {
             totalAmount,
             paymentId
         ];
-
         await pool.query(query, values);
         res.json({ success: true, message: 'Order placed successfully!' });
-
     } catch (err) {
         console.error('Error during checkout:', err);
         res.status(500).json({ success: false, message: 'An internal server error occurred.' });
     }
 });
 
-
 // --- Admin Routes ---
 // (The rest of your admin routes remain unchanged)
-
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -234,7 +231,6 @@ app.get('/admin/products', async (req, res) => {
         res.status(500).send('Error loading product management page.');
     }
 });
-
 app.get('/admin/edit-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -250,7 +246,6 @@ app.get('/admin/edit-product/:id', async (req, res) => {
         res.status(500).send('Error loading edit page.');
     }
 });
-
 app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -269,7 +264,6 @@ app.post('/admin/update-product/:id', async (req, res) => {
         res.status(500).send('Error updating product.');
     }
 });
-
 app.post('/admin/delete-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -280,7 +274,6 @@ app.post('/admin/delete-product/:id', async (req, res) => {
         res.status(500).send('Error deleting product.');
     }
 });
-
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -298,7 +291,6 @@ app.post('/add-product', async (req, res) => {
         res.status(500).send('Error adding product.');
     }
 });
-
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
