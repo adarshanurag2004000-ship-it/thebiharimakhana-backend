@@ -86,20 +86,51 @@ app.get('/', async (req, res) => {
     }
 });
 
+// ==========================================================
+// ===== START OF MODIFIED /api/products ROUTE =====
+// ==========================================================
 app.get('/api/products', async (req, res) => {
     try {
-        const { rows } = await pool.query('SELECT * FROM products WHERE stock_quantity > 0 ORDER BY created_at DESC');
+        const { search, sort } = req.query;
+
+        let query = 'SELECT * FROM products WHERE stock_quantity > 0';
+        const queryParams = [];
+
+        // Handle Search
+        if (search) {
+            query += ` AND (name ILIKE $${queryParams.length + 1} OR description ILIKE $${queryParams.length + 1})`;
+            queryParams.push(`%${search}%`);
+        }
+
+        // Handle Sort
+        let orderByClause = ' ORDER BY created_at DESC'; // Default sort
+        switch (sort) {
+            case 'price-asc':
+                orderByClause = ' ORDER BY COALESCE(sale_price, price) ASC';
+                break;
+            case 'price-desc':
+                orderByClause = ' ORDER BY COALESCE(sale_price, price) DESC';
+                break;
+            case 'name-asc':
+                orderByClause = ' ORDER BY name ASC';
+                break;
+            case 'name-desc':
+                orderByClause = ' ORDER BY name DESC';
+                break;
+        }
+        query += orderByClause;
+
+        const { rows } = await pool.query(query, queryParams);
         res.json(rows);
     } catch (err) {
+        console.error('Error fetching products:', err);
         res.status(500).send('Error fetching products');
     }
 });
-
 // ==========================================================
-// ===== START OF NEW CODE =====
+// ===== END OF MODIFIED /api/products ROUTE =====
 // ==========================================================
 
-// API Endpoint to Calculate Shipping and Total
 app.post('/api/calculate-total', (req, res) => {
     const { cart } = req.body;
 
@@ -125,7 +156,6 @@ app.post('/api/calculate-total', (req, res) => {
     });
 });
 
-// API Endpoint to finalize the checkout and save the order
 app.post('/checkout', async (req, res) => {
     const { cart, addressDetails, paymentId } = req.body;
 
@@ -144,7 +174,6 @@ app.post('/checkout', async (req, res) => {
     }
 
     try {
-        // Recalculate total on the server to prevent tampering
         let subtotal = 0;
         for (const productName in cart) {
             const item = cart[productName];
@@ -176,14 +205,9 @@ app.post('/checkout', async (req, res) => {
 });
 
 
-// ==========================================================
-// ===== END OF NEW CODE =====
-// ==========================================================
-
-
 // --- Admin Routes ---
+// (The rest of your admin routes remain unchanged)
 
-// The main product management dashboard
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -211,7 +235,6 @@ app.get('/admin/products', async (req, res) => {
     }
 });
 
-// Page to show the edit form
 app.get('/admin/edit-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -228,7 +251,6 @@ app.get('/admin/edit-product/:id', async (req, res) => {
     }
 });
 
-// Route to handle the update
 app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
