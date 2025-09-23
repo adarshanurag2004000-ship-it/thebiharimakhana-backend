@@ -69,7 +69,7 @@ async function setupDatabase() {
 const productSchema = Joi.object({
     productName: Joi.string().min(3).max(100).required(),
     price: Joi.number().positive().precision(2).required(),
-    salePrice: Joi.number().positive().precision(2).allow(null, ''), // Allow sale price to be empty
+    salePrice: Joi.number().positive().precision(2).allow(null, ''),
     stockQuantity: Joi.number().integer().min(0).required(),
     description: Joi.string().min(10).max(1000).required(),
     imageUrl: Joi.string().uri().max(2048).required()
@@ -94,6 +94,92 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
+
+// ==========================================================
+// ===== START OF NEW CODE =====
+// ==========================================================
+
+// API Endpoint to Calculate Shipping and Total
+app.post('/api/calculate-total', (req, res) => {
+    const { cart } = req.body;
+
+    if (!cart || Object.keys(cart).length === 0) {
+      return res.status(400).json({ error: 'Cart data is missing or empty.' });
+    }
+  
+    let subtotal = 0;
+    for (const productName in cart) {
+      const item = cart[productName];
+      if (typeof item.price === 'number' && typeof item.quantity === 'number') {
+          subtotal += item.price * item.quantity;
+      }
+    }
+  
+    const shippingCost = subtotal >= 500 ? 0 : 99;
+    const total = subtotal + shippingCost;
+  
+    res.json({
+      subtotal: subtotal,
+      shippingCost: shippingCost,
+      total: total
+    });
+});
+
+// API Endpoint to finalize the checkout and save the order
+app.post('/checkout', async (req, res) => {
+    const { cart, addressDetails, paymentId } = req.body;
+
+    if (!cart || !addressDetails || !paymentId || Object.keys(cart).length === 0) {
+        return res.status(400).json({ success: false, message: 'Missing required order information.' });
+    }
+
+    const addressSchema = Joi.object({
+        name: Joi.string().required(),
+        phone: Joi.string().required(),
+        address: Joi.string().required()
+    });
+    const { error } = addressSchema.validate(addressDetails);
+    if (error) {
+        return res.status(400).json({ success: false, message: `Invalid address details: ${error.details[0].message}` });
+    }
+
+    try {
+        // Recalculate total on the server to prevent tampering
+        let subtotal = 0;
+        for (const productName in cart) {
+            const item = cart[productName];
+            subtotal += item.price * item.quantity;
+        }
+        const shippingCost = subtotal >= 500 ? 0 : 99;
+        const totalAmount = subtotal + shippingCost;
+
+        const query = `
+            INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, razorpay_payment_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `;
+        const values = [
+            addressDetails.name,
+            addressDetails.phone,
+            addressDetails.address,
+            JSON.stringify(cart),
+            totalAmount,
+            paymentId
+        ];
+
+        await pool.query(query, values);
+        res.json({ success: true, message: 'Order placed successfully!' });
+
+    } catch (err) {
+        console.error('Error during checkout:', err);
+        res.status(500).json({ success: false, message: 'An internal server error occurred.' });
+    }
+});
+
+
+// ==========================================================
+// ===== END OF NEW CODE =====
+// ==========================================================
+
 
 // --- Admin Routes ---
 
