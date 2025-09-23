@@ -69,7 +69,7 @@ async function setupDatabase() {
 const productSchema = Joi.object({
     productName: Joi.string().min(3).max(100).required(),
     price: Joi.number().positive().precision(2).required(),
-    salePrice: Joi.number().positive().precision(2).allow(null, ''),
+    salePrice: Joi.number().positive().precision(2).allow(null, ''), // Allow sale price to be empty
     stockQuantity: Joi.number().integer().min(0).required(),
     description: Joi.string().min(10).max(1000).required(),
     imageUrl: Joi.string().uri().max(2048).required()
@@ -119,13 +119,13 @@ app.get('/admin/products', async (req, res) => {
                 </td>
             </tr>
         `).join('');
-        res.send(`<!DOCTYPE html><html lang="en"><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f2f2f2}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price (e.g., 199.00): <input name="price" type="number" step="0.01" required></label></p><p><label>Stock Quantity: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
+        res.send(`<!DOCTYPE html><html lang="en"><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f2f2f2}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price (e.g., 199.00): <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price (optional): <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock Quantity: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
     } catch (err) {
         res.status(500).send('Error loading product management page.');
     }
 });
 
-// THIS IS THE NEW PAGE TO SHOW THE EDIT FORM
+// Page to show the edit form
 app.get('/admin/edit-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -142,7 +142,7 @@ app.get('/admin/edit-product/:id', async (req, res) => {
     }
 });
 
-// THIS IS THE NEW ROUTE TO HANDLE THE UPDATE
+// Route to handle the update
 app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -161,7 +161,6 @@ app.post('/admin/update-product/:id', async (req, res) => {
         res.status(500).send('Error updating product.');
     }
 });
-
 
 app.post('/admin/delete-product/:id', async (req, res) => {
     const { password } = req.query;
@@ -182,7 +181,10 @@ app.post('/add-product', async (req, res) => {
         return res.status(400).send(error.details[0].message);
     }
     try {
-        await pool.query('INSERT INTO products(name, price, description, image_url, stock_quantity) VALUES($1, $2, $3, $4, $5)', [value.productName, value.price, value.description, value.imageUrl, value.stockQuantity]);
+        await pool.query(
+            'INSERT INTO products(name, price, sale_price, stock_quantity, description, image_url) VALUES($1, $2, $3, $4, $5, $6)',
+            [value.productName, value.price, value.salePrice || null, value.stockQuantity, value.description, value.imageUrl]
+        );
         res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
     } catch (err) {
         res.status(500).send('Error adding product.');
