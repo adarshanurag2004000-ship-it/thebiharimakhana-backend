@@ -344,6 +344,7 @@ app.get('/admin/users', async (req, res) => {
         const usersHtml = rows.map(user => `<tr><td>${he.encode(user.name || 'N/A')}</td><td>${he.encode(user.email)}</td><td>${he.encode(user.phone_number || 'N/A')}</td><td>${he.encode(user.last_address || 'N/A')}</td><td>${new Date(user.created_at).toLocaleString()}</td></tr>`).join('');
         res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Last Address</th><th>Registration Date</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
     } catch (err) {
+        console.error("Error loading users page:", err);
         res.status(500).send('Error loading users page.');
     }
 });
@@ -401,7 +402,6 @@ app.post('/admin/delete-order/:id', async (req, res) => {
         res.status(500).send('Error deleting order.');
     }
 });
-
 
 app.use((err, req, res, next) => {
     console.error(err.stack);
