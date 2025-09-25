@@ -52,7 +52,6 @@ async function setupDatabase() {
         `);
         console.log('"products" table is ready.');
 
-        // MODIFIED: Added user_uid column to orders table
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
@@ -152,9 +151,9 @@ app.post('/api/calculate-total', (req, res) => {
     res.json({ subtotal: subtotal, shippingCost: shippingCost, total: total });
 });
 
+// MODIFIED: Temporarily removed user_uid from the INSERT statement
 app.post('/checkout', verifyToken, async (req, res) => {
     const { cart, addressDetails, paymentId } = req.body;
-    const userUid = req.user.uid; 
     if (!cart || !addressDetails || !paymentId || Object.keys(cart).length === 0) {
         return res.status(400).json({ success: false, message: 'Missing required order information.' });
     }
@@ -174,8 +173,8 @@ app.post('/checkout', verifyToken, async (req, res) => {
         }
         const totalAmount = subtotal + shippingCost;
         const query = `
-            INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, razorpay_payment_id, user_uid)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, razorpay_payment_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
         `;
         const values = [
             addressDetails.name,
@@ -183,8 +182,7 @@ app.post('/checkout', verifyToken, async (req, res) => {
             addressDetails.address,
             JSON.stringify(cart),
             totalAmount,
-            paymentId,
-            userUid
+            paymentId
         ];
         await pool.query(query, values);
         res.json({ success: true, message: 'Order placed successfully!' });
@@ -230,7 +228,7 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
 
 
 // --- Admin Routes ---
-// ... (Your admin routes are unchanged)
+// (Your admin routes are unchanged)
 
 app.listen(port, () => {
     console.log(`Server is listening on port ${port}`);
