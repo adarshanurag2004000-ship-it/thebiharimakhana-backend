@@ -52,6 +52,7 @@ async function setupDatabase() {
         `);
         console.log('"products" table is ready.');
 
+        // CORRECTED: Added user_uid column to orders table definition
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
