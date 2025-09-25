@@ -86,16 +86,6 @@ async function verifyToken(req, res, next) {
     }
 }
 
-// --- Validation Schemas ---
-const productSchema = Joi.object({
-    productName: Joi.string().min(3).max(100).required(),
-    price: Joi.number().positive().precision(2).required(),
-    salePrice: Joi.number().positive().precision(2).allow(null, ''),
-    stockQuantity: Joi.number().integer().min(0).required(),
-    description: Joi.string().min(10).max(1000).required(),
-    imageUrl: Joi.string().uri().max(2048).required()
-});
-
 // --- Email Sending Functions ---
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -276,6 +266,7 @@ app.get('/admin/products', async (req, res) => {
         res.status(500).send('Error loading product management page.');
     }
 });
+
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -291,6 +282,7 @@ app.post('/add-product', async (req, res) => {
         res.status(500).send('Error adding product.');
     }
 });
+
 app.get('/admin/edit-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -304,6 +296,7 @@ app.get('/admin/edit-product/:id', async (req, res) => {
         res.status(500).send('Error loading edit page.');
     }
 });
+
 app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -320,6 +313,7 @@ app.post('/admin/update-product/:id', async (req, res) => {
         res.status(500).send('Error updating product.');
     }
 });
+
 app.post('/admin/delete-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -343,6 +337,7 @@ app.get('/admin/users', async (req, res) => {
     }
 });
 
+// MODIFIED: View Orders now has a Delete button as well as Cancel
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -357,7 +352,25 @@ app.get('/view-orders', async (req, res) => {
                     itemsHtml = '<ul>' + Object.keys(items).map(key => `<li>${he.encode(key)} (x${items[key].quantity})</li>`).join('') + '</ul>';
                 } catch (e) { itemsHtml = '<span style="color:red;">Invalid data</span>'; }
             }
-            html += `<tr><td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td><td><form action="/admin/cancel-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;"><button type="submit" onclick="return confirm('Are you sure?');" style="color:red;">Cancel</button></form></td></tr>`;
+            html += `
+                <tr>
+                    <td>${order.id}</td>
+                    <td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td>
+                    <td>${he.encode(order.address)}</td>
+                    <td>₹${order.order_amount}</td>
+                    <td>${he.encode(order.razorpay_payment_id)}</td>
+                    <td>${new Date(order.created_at).toLocaleString()}</td>
+                    <td>${itemsHtml}</td>
+                    <td>
+                        <form action="/admin/cancel-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block; margin-bottom: 5px;">
+                            <button type="submit" onclick="return confirm('Cancel this order and notify the customer?');" style="color:orange;">Cancel & Notify</button>
+                        </form>
+                        <form action="/admin/delete-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block;">
+                            <button type="submit" onclick="return confirm('Permanently DELETE this order? This cannot be undone.');" style="color:red;">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+            `;
         });
         html += '</tbody></table>';
         res.send(html);
@@ -383,12 +396,25 @@ app.post('/admin/cancel-order/:id', async (req, res) => {
         const customerEmail = userResult.rows[0].email;
         await sendOrderCancellationEmail(customerEmail, order.customer_name, id);
         await pool.query('DELETE FROM orders WHERE id = $1', [id]);
-        res.send(`Order #${id} cancelled. Email sent to ${customerEmail}. <a href="/view-orders?password=${encodeURIComponent(password)}">Back to orders.</a>`);
+        res.send(`Order #${id} has been CANCELLED and a notification email has been sent to ${customerEmail}. <a href="/view-orders?password=${encodeURIComponent(password)}">Go back to orders.</a>`);
     } catch (err) {
-        console.error('Error cancelling order:', err);
         res.status(500).send('Error cancelling order.');
     }
 });
+
+// --- NEW: Delete Order Route ---
+app.post('/admin/delete-order/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        const { id } = req.params;
+        await pool.query('DELETE FROM orders WHERE id = $1', [id]);
+        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error deleting order.');
+    }
+});
+
 
 app.use((err, req, res, next) => {
     console.error(err.stack);
