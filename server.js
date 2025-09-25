@@ -111,12 +111,10 @@ const productSchema = Joi.object({
 // --- API Routes ---
 app.get('/', async (req, res) => {
     try {
-        const client = await pool.connect();
+        await pool.query('SELECT NOW()');
         res.send('The Bihari Makhana Backend is running and connected to the database.');
-        client.release();
     } catch (err) {
-        console.error("Database Connection Error:", err);
-        res.status(500).send('Backend is running, but could not connect to the database. Error: ' + err.message);
+        res.status(500).send('Backend is running, but could not connect to the database.');
     }
 });
 
