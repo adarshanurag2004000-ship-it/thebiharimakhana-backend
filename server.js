@@ -111,12 +111,10 @@ const productSchema = Joi.object({
 // --- API Routes ---
 app.get('/', async (req, res) => {
     try {
-        const client = await pool.connect();
+        await pool.query('SELECT NOW()');
         res.send('The Bihari Makhana Backend is running and connected to the database.');
-        client.release();
     } catch (err) {
-        console.error("Database Connection Error:", err);
-        res.status(500).send('Backend is running, but could not connect to the database. Error: ' + err.message);
+        res.status(500).send('Backend is running, but could not connect to the database.');
     }
 });
 
@@ -340,7 +338,7 @@ app.get('/view-orders', async (req, res) => {
                     itemsHtml = '<ul>' + Object.keys(items).map(key => `<li>${he.encode(key)} (x${items[key].quantity})</li>`).join('') + '</ul>';
                 } catch (e) { itemsHtml = '<span style="color:red;">Invalid item data</span>'; }
             }
-            html += `<tr><td>${order.id} Backend is running, but could not connect to the database. Error: password authentication failed for user "thebiharimakhana"<td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td></tr>`;
+            html += `<tr><td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td></tr>`;
         });
         html += '</tbody></table>';
         res.send(html);
