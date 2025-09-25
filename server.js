@@ -58,8 +58,6 @@ async function setupDatabase() {
             );
         `);
         console.log('"orders" table is ready.');
-        
-        // MODIFIED: Added new columns to the users table
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -93,95 +91,17 @@ async function verifyToken(req, res, next) {
     }
 }
 
+// --- Validation Schemas ---
+const productSchema = Joi.object({
+    productName: Joi.string().min(3).max(100).required(),
+    price: Joi.number().positive().precision(2).required(),
+    salePrice: Joi.number().positive().precision(2).allow(null, ''),
+    stockQuantity: Joi.number().integer().min(0).required(),
+    description: Joi.string().min(10).max(1000).required(),
+    imageUrl: Joi.string().uri().max(2048).required()
+});
+
 // --- Email Sending Functions ---
-// ... (Your email functions remain unchanged)
-
-// --- API Routes ---
-// ... (Your other API routes are unchanged)
-
-// MODIFIED: This route now accepts and saves name and phone
-app.post('/api/user-login', async (req, res) => {
-    const { email, uid, name, phone } = req.body;
-    if (!email || !uid) {
-        return res.status(400).json({ error: 'Email and UID are required.' });
-    }
-    try {
-        const existingUser = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
-        if (existingUser.rows.length === 0) {
-            // If user is new, insert their details
-            await pool.query(
-                'INSERT INTO users (email, firebase_uid, name, phone_number) VALUES ($1, $2, $3, $4)',
-                [email, uid, name, phone]
-            );
-            console.log('New user created:', email);
-        } else {
-            console.log('Existing user logged in:', email);
-        }
-        res.status(200).json({ success: true, message: 'User session handled.' });
-    } catch (err) {
-        console.error('Error in user-login endpoint:', err);
-        res.status(500).json({ error: 'Internal server error.' });
-    }
-});
-
-app.post('/checkout', verifyToken, async (req, res) => {
-    const { cart, addressDetails, paymentId } = req.body;
-    const user = req.user; 
-    if (!cart || !addressDetails || !paymentId || Object.keys(cart).length === 0) {
-        return res.status(400).json({ success: false, message: 'Missing required order information.' });
-    }
-    try {
-        // ... (shipping calculation logic is unchanged)
-
-        // Update the user's last address and phone number
-        await pool.query(
-            'UPDATE users SET last_address = $1, phone_number = $2 WHERE firebase_uid = $3',
-            [addressDetails.address, addressDetails.phone, user.uid]
-        );
-
-        // ... (the rest of the checkout logic is unchanged)
-        
-    } catch (err) {
-        console.error('Error during checkout:', err);
-        res.status(500).json({ success: false, message: 'An internal server error occurred.' });
-    }
-});
-
-
-// --- Admin Routes ---
-// ... (Your product admin routes are unchanged)
-
-// MODIFIED: Admin users page now shows name, phone, and address
-app.get('/admin/users', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    try {
-        const { rows } = await pool.query('SELECT name, email, phone_number, last_address, created_at FROM users ORDER BY created_at DESC');
-        const usersHtml = rows.map(user => `
-            <tr>
-                <td>${he.encode(user.name || 'N/A')}</td>
-                <td>${he.encode(user.email)}</td>
-                <td>${he.encode(user.phone_number || 'N/A')}</td>
-                <td>${he.encode(user.last_address || 'N/A')}</td>
-                <td>${new Date(user.created_at).toLocaleString()}</td>
-            </tr>
-        `).join('');
-        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Last Address</th><th>Registration Date</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
-    } catch (err) {
-        res.status(500).send('Error loading users page.');
-    }
-});
-
-// ... (Your other admin routes are unchanged)
-
-// Final boilerplate
-app.listen(port, () => {
-    console.log(`Server is listening on port ${port}`);
-    setupDatabase();
-});
-
-// --- HELPER FUNCTIONS AND OTHER ROUTES (PASTED FOR COMPLETENESS) ---
-
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
@@ -213,7 +133,64 @@ async function sendOrderCancellationEmail(customerEmail, customerName, orderId) 
     try { await sgMail.send(msg); console.log('Cancellation email sent to', customerEmail); } catch (error) { console.error('Error sending cancellation email:', error); }
 }
 
-// Full checkout route for completeness
+// --- API Routes ---
+app.get('/', async (req, res) => {
+    try {
+        await pool.query('SELECT NOW()');
+        res.send('The Bihari Makhana Backend is running and connected to the database.');
+    } catch (err) {
+        res.status(500).send('Backend is running, but could not connect to the database.');
+    }
+});
+
+app.get('/api/products', async (req, res) => {
+    try {
+        const { search, sort } = req.query;
+        let query = 'SELECT * FROM products WHERE stock_quantity > 0';
+        const queryParams = [];
+        if (search) {
+            query += ` AND (name ILIKE $${queryParams.length + 1} OR description ILIKE $${queryParams.length + 1})`;
+            queryParams.push(`%${search}%`);
+        }
+        let orderByClause = ' ORDER BY created_at DESC';
+        switch (sort) {
+            case 'price-asc': orderByClause = ' ORDER BY COALESCE(sale_price, price) ASC'; break;
+            case 'price-desc': orderByClause = ' ORDER BY COALESCE(sale_price, price) DESC'; break;
+            case 'name-asc': orderByClause = ' ORDER BY name ASC'; break;
+            case 'name-desc': orderByClause = ' ORDER BY name DESC'; break;
+        }
+        query += orderByClause;
+        const { rows } = await pool.query(query, queryParams);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).send('Error fetching products');
+    }
+});
+
+app.post('/api/calculate-total', (req, res) => {
+    const { cart } = req.body;
+    if (!cart || Object.keys(cart).length === 0) {
+      return res.status(400).json({ error: 'Cart data is missing or empty.' });
+    }
+    let subtotal = 0;
+    const cartItems = Object.keys(cart);
+    for (const productName of cartItems) {
+      const item = cart[productName];
+      if (typeof item.price === 'number' && typeof item.quantity === 'number') {
+          subtotal += item.price * item.quantity;
+      }
+    }
+    let shippingCost = 0;
+    const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subsciption');
+    if (isOnlySubscription) {
+        shippingCost = 0;
+    } else {
+        shippingCost = subtotal >= 500 ? 0 : 99;
+    }
+    const total = subtotal + shippingCost;
+    res.json({ subtotal: subtotal, shippingCost: shippingCost, total: total });
+});
+
 app.post('/checkout', verifyToken, async (req, res) => {
     const { cart, addressDetails, paymentId } = req.body;
     const user = req.user; 
@@ -236,7 +213,6 @@ app.post('/checkout', verifyToken, async (req, res) => {
         }
         const totalAmount = subtotal + shippingCost;
         
-        // Update user's last known address and phone
         await pool.query(
             'UPDATE users SET last_address = $1, phone_number = $2 WHERE firebase_uid = $3',
             [addressDetails.address, addressDetails.phone, user.uid]
@@ -260,7 +236,40 @@ app.post('/checkout', verifyToken, async (req, res) => {
     }
 });
 
-// Full admin routes for completeness
+app.post('/api/user-login', async (req, res) => {
+    const { email, uid, name, phone } = req.body;
+    if (!email || !uid) {
+        return res.status(400).json({ error: 'Email and UID are required.' });
+    }
+    try {
+        const existingUser = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
+        if (existingUser.rows.length === 0) {
+            await pool.query(
+                'INSERT INTO users (email, firebase_uid, name, phone_number) VALUES ($1, $2, $3, $4)',
+                [email, uid, name, phone]
+            );
+        }
+        res.status(200).json({ success: true, message: 'User session handled.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal server error.' });
+    }
+});
+
+app.get('/api/my-orders', verifyToken, async (req, res) => {
+    try {
+        const userUid = req.user.uid;
+        const { rows } = await pool.query(
+            'SELECT id, order_amount, created_at, cart_items FROM orders WHERE user_uid = $1 ORDER BY created_at DESC', 
+            [userUid]
+        );
+        res.json(rows);
+    } catch (err) {
+        res.status(500).send('Error fetching orders.');
+    }
+});
+
+
+// --- Admin Routes ---
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -326,6 +335,19 @@ app.post('/admin/delete-product/:id', async (req, res) => {
         res.status(500).send('Error deleting product.');
     }
 });
+
+app.get('/admin/users', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        const { rows } = await pool.query('SELECT name, email, phone_number, last_address, created_at FROM users ORDER BY created_at DESC');
+        const usersHtml = rows.map(user => `<tr><td>${he.encode(user.name || 'N/A')}</td><td>${he.encode(user.email)}</td><td>${he.encode(user.phone_number || 'N/A')}</td><td>${he.encode(user.last_address || 'N/A')}</td><td>${new Date(user.created_at).toLocaleString()}</td></tr>`).join('');
+        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Last Address</th><th>Registration Date</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
+    } catch (err) {
+        res.status(500).send('Error loading users page.');
+    }
+});
+
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -348,6 +370,7 @@ app.get('/view-orders', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
+
 app.post('/admin/cancel-order/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -366,6 +389,7 @@ app.post('/admin/cancel-order/:id', async (req, res) => {
         res.status(500).send('Error cancelling order.');
     }
 });
+
 app.post('/admin/delete-order/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -378,7 +402,13 @@ app.post('/admin/delete-order/:id', async (req, res) => {
     }
 });
 
+
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).send('Something broke!');
+});
+
+app.listen(port, () => {
+    console.log(`Server is listening on port ${port}`);
+    setupDatabase();
 });
