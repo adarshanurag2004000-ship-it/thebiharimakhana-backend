@@ -52,6 +52,7 @@ async function setupDatabase() {
         `);
         console.log('"products" table is ready.');
 
+        // MODIFIED: Added user_uid column to orders table
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
@@ -97,25 +98,9 @@ async function verifyToken(req, res, next) {
     }
 }
 
-// --- Validation Schemas ---
-const productSchema = Joi.object({
-    productName: Joi.string().min(3).max(100).required(),
-    price: Joi.number().positive().precision(2).required(),
-    salePrice: Joi.number().positive().precision(2).allow(null, ''),
-    stockQuantity: Joi.number().integer().min(0).required(),
-    description: Joi.string().min(10).max(1000).required(),
-    imageUrl: Joi.string().uri().max(2048).required()
-});
-
-
 // --- API Routes ---
 app.get('/', async (req, res) => {
-    try {
-        await pool.query('SELECT NOW()');
-        res.send('The Bihari Makhana Backend is running and connected to the database.');
-    } catch (err) {
-        res.status(500).send('Backend is running, but could not connect to the database.');
-    }
+    res.send('The Bihari Makhana Backend is running.');
 });
 
 app.get('/api/products', async (req, res) => {
@@ -243,7 +228,9 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
     }
 });
 
+
 // --- Admin Routes ---
+// (Your admin routes are unchanged)
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
