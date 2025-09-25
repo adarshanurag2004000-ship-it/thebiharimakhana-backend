@@ -124,9 +124,6 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
-// ==========================================================
-// ===== START OF MODIFIED calculate-total ROUTE =====
-// ==========================================================
 app.post('/api/calculate-total', (req, res) => {
     const { cart } = req.body;
     if (!cart || Object.keys(cart).length === 0) {
@@ -144,14 +141,12 @@ app.post('/api/calculate-total', (req, res) => {
     }
     
     let shippingCost = 0;
-    // Check if the only item in the cart is the subscription product
-    const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subscription');
+    // MODIFIED: Now checks for your specific spelling "subsciption"
+    const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subsciption');
 
     if (isOnlySubscription) {
-        // If it's only the subscription, shipping is free
         shippingCost = 0;
     } else {
-        // Otherwise, apply the standard shipping rule
         shippingCost = subtotal >= 500 ? 0 : 99;
     }
     
@@ -159,9 +154,6 @@ app.post('/api/calculate-total', (req, res) => {
     
     res.json({ subtotal: subtotal, shippingCost: shippingCost, total: total });
 });
-// ==========================================================
-// ===== END OF MODIFIED calculate-total ROUTE =====
-// ==========================================================
 
 app.post('/checkout', async (req, res) => {
     const { cart, addressDetails, paymentId } = req.body;
@@ -186,7 +178,8 @@ app.post('/checkout', async (req, res) => {
         }
 
         let shippingCost = 0;
-        const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subscription');
+        // MODIFIED: Now checks for your specific spelling "subsciption"
+        const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subsciption');
 
         if (isOnlySubscription) {
             shippingCost = 0;
