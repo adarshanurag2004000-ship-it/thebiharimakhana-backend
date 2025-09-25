@@ -68,10 +68,8 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
-        return 'Database setup completed successfully!';
     } catch (err) {
         console.error('Error setting up database tables:', err);
-        throw err;
     } finally {
         client.release();
     }
@@ -95,22 +93,6 @@ app.get('/', async (req, res) => {
         client.release();
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
-    }
-});
-
-// ==========================================================
-// ===== NEW DATABASE SETUP ROUTE FOR TESTING =====
-// ==========================================================
-app.get('/admin/setup-db', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { 
-        return res.status(403).send('Access Denied'); 
-    }
-    try {
-        const message = await setupDatabase();
-        res.send(message);
-    } catch (err) {
-        res.status(500).send('Error during database setup: ' + err.message);
     }
 });
 
@@ -142,22 +124,44 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
+// ==========================================================
+// ===== START OF MODIFIED calculate-total ROUTE =====
+// ==========================================================
 app.post('/api/calculate-total', (req, res) => {
     const { cart } = req.body;
     if (!cart || Object.keys(cart).length === 0) {
       return res.status(400).json({ error: 'Cart data is missing or empty.' });
     }
+    
     let subtotal = 0;
-    for (const productName in cart) {
+    const cartItems = Object.keys(cart);
+
+    for (const productName of cartItems) {
       const item = cart[productName];
       if (typeof item.price === 'number' && typeof item.quantity === 'number') {
           subtotal += item.price * item.quantity;
       }
     }
-    const shippingCost = subtotal >= 500 ? 0 : 99;
+    
+    let shippingCost = 0;
+    // Check if the only item in the cart is the subscription product
+    const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subscription');
+
+    if (isOnlySubscription) {
+        // If it's only the subscription, shipping is free
+        shippingCost = 0;
+    } else {
+        // Otherwise, apply the standard shipping rule
+        shippingCost = subtotal >= 500 ? 0 : 99;
+    }
+    
     const total = subtotal + shippingCost;
+    
     res.json({ subtotal: subtotal, shippingCost: shippingCost, total: total });
 });
+// ==========================================================
+// ===== END OF MODIFIED calculate-total ROUTE =====
+// ==========================================================
 
 app.post('/checkout', async (req, res) => {
     const { cart, addressDetails, paymentId } = req.body;
@@ -175,12 +179,23 @@ app.post('/checkout', async (req, res) => {
     }
     try {
         let subtotal = 0;
-        for (const productName in cart) {
+        const cartItems = Object.keys(cart);
+        for (const productName of cartItems) {
             const item = cart[productName];
             subtotal += item.price * item.quantity;
         }
-        const shippingCost = subtotal >= 500 ? 0 : 99;
+
+        let shippingCost = 0;
+        const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subscription');
+
+        if (isOnlySubscription) {
+            shippingCost = 0;
+        } else {
+            shippingCost = subtotal >= 500 ? 0 : 99;
+        }
+        
         const totalAmount = subtotal + shippingCost;
+        
         const query = `
             INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, razorpay_payment_id)
             VALUES ($1, $2, $3, $4, $5, $6)
@@ -335,5 +350,5 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
     console.log(`Server is listening on port ${port}`);
-    // We removed setupDatabase() from here to prevent it from running on every start
+    setupDatabase();
 });
