@@ -336,6 +336,7 @@ app.post('/admin/delete-product/:id', async (req, res) => {
     }
 });
 
+// CORRECTED: This route is now fixed
 app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -413,4 +414,3 @@ app.listen(port, () => {
     console.log(`Server is listening on port ${port}`);
     setupDatabase();
 });
-
