@@ -58,16 +58,9 @@ async function setupDatabase() {
             );
         `);
         console.log('"orders" table is ready.');
-        
-        // CORRECTED: Added phone_number column to the users table
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255),
-                phone_number VARCHAR(20),
-                last_address TEXT,
-                email VARCHAR(255) UNIQUE NOT NULL,
-                firebase_uid VARCHAR(255) UNIQUE NOT NULL,
+                id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, firebase_uid VARCHAR(255) UNIQUE NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         `);
@@ -93,16 +86,6 @@ async function verifyToken(req, res, next) {
     }
 }
 
-// --- Validation Schemas ---
-const productSchema = Joi.object({
-    productName: Joi.string().min(3).max(100).required(),
-    price: Joi.number().positive().precision(2).required(),
-    salePrice: Joi.number().positive().precision(2).allow(null, ''),
-    stockQuantity: Joi.number().integer().min(0).required(),
-    description: Joi.string().min(10).max(1000).required(),
-    imageUrl: Joi.string().uri().max(2048).required()
-});
-
 // --- Email Sending Functions ---
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -122,7 +105,12 @@ async function sendOrderConfirmationEmail(customerEmail, customerName, order, ca
         </div><p style="font-size: 12px; color: #777; text-align: center;">This is an automated mail, please do not reply. For any questions, contact us at <a href="mailto:thebiharimakhana@gmail.com">thebiharimakhana@gmail.com</a>.</p>
       </div>`;
     const msg = { to: customerEmail, from: 'thebiharimakhana@gmail.com', subject: `Your The Bihari Makhana Order #${order.id} is Confirmed!`, html: emailHtml };
-    try { await sgMail.send(msg); console.log('Confirmation email sent to', customerEmail); } catch (error) { console.error('Error sending confirmation email:', error); }
+    try {
+        await sgMail.send(msg);
+        console.log('Confirmation email sent to', customerEmail);
+    } catch (error) {
+        console.error('Error sending confirmation email:', error);
+    }
 }
 
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
@@ -132,7 +120,12 @@ async function sendOrderCancellationEmail(customerEmail, customerName, orderId) 
         <p>If you did not request this cancellation, please contact our support team immediately.</p><p style="font-size: 12px; color: #777; text-align: center;">This is an automated mail, please do not reply. For any questions, contact us at <a href="mailto:thebiharimakhana@gmail.com">thebiharimakhana@gmail.com</a>.</p>
       </div>`;
     const msg = { to: customerEmail, from: 'thebiharimakhana@gmail.com', subject: `Regarding Your The Bihari Makhana Order #${orderId}`, html: emailHtml };
-    try { await sgMail.send(msg); console.log('Cancellation email sent to', customerEmail); } catch (error) { console.error('Error sending cancellation email:', error); }
+    try {
+        await sgMail.send(msg);
+        console.log('Cancellation email sent to', customerEmail);
+    } catch (error) {
+        console.error('Error sending cancellation email:', error);
+    }
 }
 
 // --- API Routes ---
@@ -214,12 +207,6 @@ app.post('/checkout', verifyToken, async (req, res) => {
             shippingCost = subtotal >= 500 ? 0 : 99;
         }
         const totalAmount = subtotal + shippingCost;
-        
-        await pool.query(
-            'UPDATE users SET last_address = $1, phone_number = $2 WHERE firebase_uid = $3',
-            [addressDetails.address, addressDetails.phone, user.uid]
-        );
-
         const query = `
             INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, razorpay_payment_id, user_uid)
             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at
@@ -239,17 +226,14 @@ app.post('/checkout', verifyToken, async (req, res) => {
 });
 
 app.post('/api/user-login', async (req, res) => {
-    const { email, uid, name, phone } = req.body;
+    const { email, uid } = req.body;
     if (!email || !uid) {
         return res.status(400).json({ error: 'Email and UID are required.' });
     }
     try {
         const existingUser = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
         if (existingUser.rows.length === 0) {
-            await pool.query(
-                'INSERT INTO users (email, firebase_uid, name, phone_number) VALUES ($1, $2, $3, $4)',
-                [email, uid, name, phone]
-            );
+            await pool.query('INSERT INTO users (email, firebase_uid) VALUES ($1, $2)', [email, uid]);
         }
         res.status(200).json({ success: true, message: 'User session handled.' });
     } catch (err) {
@@ -270,7 +254,6 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
     }
 });
 
-
 // --- Admin Routes ---
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
@@ -283,6 +266,7 @@ app.get('/admin/products', async (req, res) => {
         res.status(500).send('Error loading product management page.');
     }
 });
+
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -298,6 +282,7 @@ app.post('/add-product', async (req, res) => {
         res.status(500).send('Error adding product.');
     }
 });
+
 app.get('/admin/edit-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -311,6 +296,7 @@ app.get('/admin/edit-product/:id', async (req, res) => {
         res.status(500).send('Error loading edit page.');
     }
 });
+
 app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -327,6 +313,7 @@ app.post('/admin/update-product/:id', async (req, res) => {
         res.status(500).send('Error updating product.');
     }
 });
+
 app.post('/admin/delete-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -342,15 +329,15 @@ app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
-        const { rows } = await pool.query('SELECT name, email, phone_number, last_address, created_at FROM users ORDER BY created_at DESC');
-        const usersHtml = rows.map(user => `<tr><td>${he.encode(user.name || 'N/A')}</td><td>${he.encode(user.email)}</td><td>${he.encode(user.phone_number || 'N/A')}</td><td>${he.encode(user.last_address || 'N/A')}</td><td>${new Date(user.created_at).toLocaleString()}</td></tr>`).join('');
-        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Last Address</th><th>Registration Date</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
+        const { rows } = await pool.query('SELECT email, firebase_uid, created_at FROM users ORDER BY created_at DESC');
+        const usersHtml = rows.map(user => `<tr><td>${he.encode(user.email)}</td><td>${he.encode(user.firebase_uid)}</td><td>${new Date(user.created_at).toLocaleString()}</td></tr>`).join('');
+        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Firebase UID</th><th>Registration Date</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
     } catch (err) {
-        console.error("Error loading users page:", err);
         res.status(500).send('Error loading users page.');
     }
 });
 
+// MODIFIED: View Orders now has a Delete button as well as Cancel
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -365,7 +352,25 @@ app.get('/view-orders', async (req, res) => {
                     itemsHtml = '<ul>' + Object.keys(items).map(key => `<li>${he.encode(key)} (x${items[key].quantity})</li>`).join('') + '</ul>';
                 } catch (e) { itemsHtml = '<span style="color:red;">Invalid data</span>'; }
             }
-            html += `<tr><td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td><td><form action="/admin/cancel-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block; margin-bottom: 5px;"><button type="submit" onclick="return confirm('Cancel and notify?');" style="color:orange;">Cancel & Notify</button></form><form action="/admin/delete-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block;"><button type="submit" onclick="return confirm('Permanently DELETE?');" style="color:red;">Delete</button></form></td></tr>`;
+            html += `
+                <tr>
+                    <td>${order.id}</td>
+                    <td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td>
+                    <td>${he.encode(order.address)}</td>
+                    <td>₹${order.order_amount}</td>
+                    <td>${he.encode(order.razorpay_payment_id)}</td>
+                    <td>${new Date(order.created_at).toLocaleString()}</td>
+                    <td>${itemsHtml}</td>
+                    <td>
+                        <form action="/admin/cancel-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block; margin-bottom: 5px;">
+                            <button type="submit" onclick="return confirm('Cancel this order and notify the customer?');" style="color:orange;">Cancel & Notify</button>
+                        </form>
+                        <form action="/admin/delete-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block;">
+                            <button type="submit" onclick="return confirm('Permanently DELETE this order? This cannot be undone.');" style="color:red;">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+            `;
         });
         html += '</tbody></table>';
         res.send(html);
@@ -380,19 +385,24 @@ app.post('/admin/cancel-order/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const orderResult = await pool.query('SELECT user_uid, customer_name FROM orders WHERE id = $1', [id]);
-        if (orderResult.rows.length === 0) { return res.status(404).send('Order not found.'); }
+        if (orderResult.rows.length === 0) {
+            return res.status(404).send('Order not found.');
+        }
         const order = orderResult.rows[0];
         const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
-        if (userResult.rows.length === 0) { return res.status(404).send('Customer email not found.'); }
+        if (userResult.rows.length === 0) {
+            return res.status(404).send('Customer email not found.');
+        }
         const customerEmail = userResult.rows[0].email;
         await sendOrderCancellationEmail(customerEmail, order.customer_name, id);
         await pool.query('DELETE FROM orders WHERE id = $1', [id]);
-        res.send(`Order #${id} cancelled. Email sent to ${customerEmail}. <a href="/view-orders?password=${encodeURIComponent(password)}">Back to orders.</a>`);
+        res.send(`Order #${id} has been CANCELLED and a notification email has been sent to ${customerEmail}. <a href="/view-orders?password=${encodeURIComponent(password)}">Go back to orders.</a>`);
     } catch (err) {
         res.status(500).send('Error cancelling order.');
     }
 });
 
+// --- NEW: Delete Order Route ---
 app.post('/admin/delete-order/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
