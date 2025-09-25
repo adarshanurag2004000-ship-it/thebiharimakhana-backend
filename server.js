@@ -52,7 +52,6 @@ async function setupDatabase() {
         `);
         console.log('"products" table is ready.');
 
-        // MODIFIED: Added user_uid column to orders table
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
@@ -98,9 +97,27 @@ async function verifyToken(req, res, next) {
     }
 }
 
+// --- Validation Schemas ---
+const productSchema = Joi.object({
+    productName: Joi.string().min(3).max(100).required(),
+    price: Joi.number().positive().precision(2).required(),
+    salePrice: Joi.number().positive().precision(2).allow(null, ''),
+    stockQuantity: Joi.number().integer().min(0).required(),
+    description: Joi.string().min(10).max(1000).required(),
+    imageUrl: Joi.string().uri().max(2048).required()
+});
+
+
 // --- API Routes ---
 app.get('/', async (req, res) => {
-    res.send('The Bihari Makhana Backend is running.');
+    try {
+        const client = await pool.connect();
+        res.send('The Bihari Makhana Backend is running and connected to the database.');
+        client.release();
+    } catch (err) {
+        console.error("Database Connection Error:", err);
+        res.status(500).send('Backend is running, but could not connect to the database. Error: ' + err.message);
+    }
 });
 
 app.get('/api/products', async (req, res) => {
@@ -228,9 +245,7 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
     }
 });
 
-
 // --- Admin Routes ---
-// (Your admin routes are unchanged)
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -325,7 +340,7 @@ app.get('/view-orders', async (req, res) => {
                     itemsHtml = '<ul>' + Object.keys(items).map(key => `<li>${he.encode(key)} (x${items[key].quantity})</li>`).join('') + '</ul>';
                 } catch (e) { itemsHtml = '<span style="color:red;">Invalid item data</span>'; }
             }
-            html += `<tr><td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td></tr>`;
+            html += `<tr><td>${order.id} Backend is running, but could not connect to the database. Error: password authentication failed for user "thebiharimakhana"<td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td><td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td><td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td></tr>`;
         });
         html += '</tbody></table>';
         res.send(html);
