@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH ORDER STATUS FEATURES ---
+// --- TEMPORARY server.js FILE TO CREATE coupons TABLE ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -51,9 +51,7 @@ async function setupDatabase() {
                 sale_price NUMERIC(10, 2), stock_quantity INTEGER NOT NULL DEFAULT 10
             );
         `);
-        console.log('"products" table is ready.');
-        
-        // Final schema for orders table
+        console.log('INFO: "products" table is ready.');
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY, customer_name VARCHAR(255) NOT NULL, phone_number VARCHAR(20) NOT NULL,
@@ -63,7 +61,7 @@ async function setupDatabase() {
                 status VARCHAR(50) NOT NULL DEFAULT 'Processing'
             );
         `);
-        console.log('"orders" table is ready.');
+        console.log('INFO: "orders" table is ready.');
         
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
@@ -75,16 +73,29 @@ async function setupDatabase() {
                 deleted_at TIMESTAMP WITH TIME ZONE
             );
         `);
-        console.log('"users" table is ready.');
+        console.log('INFO: "users" table is ready.');
 
-    } catch (err)
- {
+        // --- NEW TABLE FOR COUPONS ---
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS coupons (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(255) UNIQUE NOT NULL,
+                discount_type VARCHAR(20) NOT NULL, -- 'percentage' or 'fixed'
+                discount_value NUMERIC(10, 2) NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log('INFO: "coupons" table is ready.');
+
+    } catch (err) {
         console.error('Error setting up database tables:', err);
     } finally {
         client.release();
     }
 }
 
+// ... All other functions and routes are included below for completeness
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -98,8 +109,6 @@ async function verifyToken(req, res, next) {
         res.status(403).send('Unauthorized');
     }
 }
-
-// --- Email Functions ---
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
@@ -125,7 +134,6 @@ async function sendOrderConfirmationEmail(customerEmail, customerName, order, ca
         console.error('Error sending confirmation email:', error);
     }
 }
-
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -140,7 +148,6 @@ async function sendOrderCancellationEmail(customerEmail, customerName, orderId) 
         console.error('Error sending cancellation email:', error);
     }
 }
-
 async function sendDeletionCodeEmail(customerEmail, code) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -158,8 +165,6 @@ async function sendDeletionCodeEmail(customerEmail, code) {
         console.error('Error sending deletion code email:', error);
     }
 }
-
-// --- NEW EMAIL FUNCTION FOR SHIPPED ORDERS ---
 async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -176,18 +181,14 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
         console.error('Error sending shipped notification email:', error);
     }
 }
-
-
-// --- API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
-        res.send('The Bihari Makhana Backend is running and connected to the database.');
+        res.send('The Bihari Makhana Backend is running (temp - coupon update) and connected to the database.');
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
 });
-
 app.post('/api/check-phone', async (req, res) => {
     const { phone } = req.body;
     if (!phone) {
@@ -205,7 +206,6 @@ app.post('/api/check-phone', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
-
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort } = req.query;
@@ -229,7 +229,6 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
-
 app.post('/api/calculate-total', (req, res) => {
     const { cart } = req.body;
     if (!cart || Object.keys(cart).length === 0) {
@@ -253,7 +252,6 @@ app.post('/api/calculate-total', (req, res) => {
     const total = subtotal + shippingCost;
     res.json({ subtotal: subtotal, shippingCost: shippingCost, total: total });
 });
-
 app.post('/checkout', verifyToken, async (req, res) => {
     const { cart, addressDetails, paymentId } = req.body;
     const user = req.user; 
@@ -292,7 +290,6 @@ app.post('/checkout', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'An internal server error occurred.' });
     }
 });
-
 app.post('/api/user-login', async (req, res) => {
     const { email, uid, phone } = req.body;
     if (!email || !uid) {
@@ -312,8 +309,6 @@ app.post('/api/user-login', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
-
-// MODIFIED TO INCLUDE ORDER STATUS
 app.get('/api/my-orders', verifyToken, async (req, res) => {
     try {
         const userUid = req.user.uid;
@@ -327,9 +322,6 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
         res.status(500).send('Error fetching orders.');
     }
 });
-
-
-// --- DELETION ROUTES ---
 app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
     const { uid, email } = req.user;
     const code = crypto.randomInt(100000, 999999).toString();
@@ -347,7 +339,6 @@ app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Could not send deletion code.' });
     }
 });
-
 app.post('/api/verify-deletion', verifyToken, async (req, res) => {
     const { uid } = req.user;
     const { code } = req.body;
@@ -388,9 +379,6 @@ app.post('/api/verify-deletion', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'An error occurred during account deletion.' });
     }
 });
-
-
-// --- Admin Routes ---
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -402,7 +390,6 @@ app.get('/admin/products', async (req, res) => {
         res.status(500).send('Error loading product management page.');
     }
 });
-
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -426,7 +413,6 @@ app.post('/add-product', async (req, res) => {
         res.status(500).send('Error adding product.');
     }
 });
-
 app.get('/admin/edit-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -440,7 +426,6 @@ app.get('/admin/edit-product/:id', async (req, res) => {
         res.status(500).send('Error loading edit page.');
     }
 });
-
 app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -465,7 +450,6 @@ app.post('/admin/update-product/:id', async (req, res) => {
         res.status(500).send('Error updating product.');
     }
 });
-
 app.post('/admin/delete-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -476,7 +460,6 @@ app.post('/admin/delete-product/:id', async (req, res) => {
         res.status(500).send('Error deleting product.');
     }
 });
-
 app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -494,7 +477,6 @@ app.get('/admin/users', async (req, res) => {
                 : `<form action="/admin/delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
                         <button type="submit" onclick="return confirm('Are you sure you want to delete this user? They will not be able to log in again.');" style="color:orange; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Delete (Deactivate)</button>
                     </form>`;
-
             return `<tr>
                 <td>${he.encode(user.email)}</td>
                 <td>${he.encode(user.phone || 'N/A')}</td> 
@@ -509,7 +491,6 @@ app.get('/admin/users', async (req, res) => {
         res.status(500).send('Error loading users page.');
     }
 });
-
 app.post('/admin/delete-user/:uid', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -524,7 +505,6 @@ app.post('/admin/delete-user/:uid', async (req, res) => {
         res.status(500).send(`Error deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
     }
 });
-
 app.post('/admin/hard-delete-user/:uid', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -538,8 +518,6 @@ app.post('/admin/hard-delete-user/:uid', async (req, res) => {
         res.status(500).send(`Error permanently deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
     }
 });
-
-// MODIFIED TO SHOW AND UPDATE ORDER STATUS
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -589,8 +567,6 @@ app.get('/view-orders', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
-
-// NEW ROUTE TO UPDATE AN ORDER'S STATUS
 app.post('/admin/update-order-status/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -598,10 +574,12 @@ app.post('/admin/update-order-status/:id', async (req, res) => {
     const { newStatus } = req.body;
 
     try {
+        const orderCheck = await pool.query('SELECT status FROM orders WHERE id = $1', [id]);
+        const oldStatus = orderCheck.rows[0]?.status;
+
         await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
         
-        // If the new status is "Shipped", send an email
-        if (newStatus === 'Shipped') {
+        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
             const orderResult = await pool.query('SELECT user_uid, customer_name FROM orders WHERE id = $1', [id]);
             if (orderResult.rows.length > 0) {
                 const order = orderResult.rows[0];
@@ -619,8 +597,6 @@ app.post('/admin/update-order-status/:id', async (req, res) => {
         res.status(500).send('Error updating order status.');
     }
 });
-
-// This route is no longer needed as Cancel is a status. Keeping delete.
 app.post('/admin/delete-order/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -632,13 +608,10 @@ app.post('/admin/delete-order/:id', async (req, res) => {
         res.status(500).send('Error deleting order.');
     }
 });
-
-
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).send('Something broke!');
 });
-
 app.listen(port, () => {
     console.log(`Server is listening on port ${port}`);
     setupDatabase();
