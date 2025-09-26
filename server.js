@@ -1,4 +1,4 @@
-// --- FINAL CLEAN server.js FILE ---
+// --- TEMPORARY server.js FILE TO ADD DELETION COLUMNS ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const he = require('he');
 require('dotenv').config();
 const sgMail = require('@sendgrid/mail');
+const crypto = require('crypto'); // Needed for generating random codes
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -43,6 +44,7 @@ const pool = new Pool({
 async function setupDatabase() {
     const client = await pool.connect();
     try {
+        // ... (product and order table creation is unchanged)
         await client.query(`
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, price NUMERIC(10, 2) NOT NULL, description TEXT,
@@ -65,10 +67,21 @@ async function setupDatabase() {
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, firebase_uid VARCHAR(255) UNIQUE NOT NULL,
                 phone VARCHAR(20),
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                delete_code VARCHAR(6),
+                delete_code_expires_at TIMESTAMP WITH TIME ZONE
             );
         `);
         console.log('"users" table is ready.');
+
+        // --- TEMPORARY CODE TO UPDATE THE USERS TABLE ---
+        try {
+            await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_code VARCHAR(6), ADD COLUMN IF NOT EXISTS delete_code_expires_at TIMESTAMP WITH TIME ZONE');
+            console.log('SUCCESS: "users" table altered successfully with deletion columns.');
+        } catch (err) {
+            console.error('Error altering table:', err);
+        }
+        // --- END OF TEMPORARY CODE ---
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -91,7 +104,7 @@ async function verifyToken(req, res, next) {
     }
 }
 
-// --- Email Sending Functions ---
+// ... (Email sending functions are unchanged)
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
@@ -133,6 +146,26 @@ async function sendOrderCancellationEmail(customerEmail, customerName, orderId) 
     }
 }
 
+// --- NEW EMAIL FUNCTION FOR DELETION CODE ---
+async function sendDeletionCodeEmail(customerEmail, code) {
+    const emailHtml = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
+        <h1 style="color: #EF4444; text-align: center;">Account Deletion Request</h1>
+        <p>We have received a request to delete your account.</p>
+        <p>To confirm this action, please use the following verification code. The code is valid for 10 minutes.</p>
+        <p style="font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 5px; margin: 20px 0; background-color: #f2f2f2; padding: 15px;">${code}</p>
+        <p>If you did not request this, please ignore this email and your account will remain safe.</p>
+      </div>`;
+    const msg = { to: customerEmail, from: 'thebiharimakhana@gmail.com', subject: 'Your Account Deletion Code for The Bihari Makhana', html: emailHtml };
+    try {
+        await sgMail.send(msg);
+        console.log('Deletion code email sent to', customerEmail);
+    } catch (error) {
+        console.error('Error sending deletion code email:', error);
+    }
+}
+
+
 // --- API Routes ---
 app.get('/', async (req, res) => {
     try {
@@ -143,6 +176,7 @@ app.get('/', async (req, res) => {
     }
 });
 
+// ... (other api routes are unchanged)
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort } = req.query;
@@ -239,8 +273,10 @@ app.post('/api/user-login', async (req, res) => {
         const existingUser = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
         if (existingUser.rows.length === 0) {
             await pool.query('INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)', [email, uid, phone]);
+            console.log(`SUCCESS: New user registered in database: ${email}`);
         } else {
             await pool.query('UPDATE users SET phone = $1 WHERE firebase_uid = $2 AND phone IS NULL', [phone, uid]);
+            console.log(`INFO: Existing user session handled for: ${email}`);
         }
         res.status(200).json({ success: true, message: 'User session handled.' });
     } catch (err) {
@@ -262,7 +298,83 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
     }
 });
 
+
+// --- NEW DELETION ROUTES ---
+
+// 1. Request a deletion code
+app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
+    const { uid, email } = req.user;
+    // Generate a random 6-digit code
+    const code = crypto.randomInt(100000, 999999).toString();
+    // Set expiration for 10 minutes from now
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    try {
+        // Store the code and expiration date in the database
+        await pool.query(
+            'UPDATE users SET delete_code = $1, delete_code_expires_at = $2 WHERE firebase_uid = $3',
+            [code, expiresAt, uid]
+        );
+
+        // Send the code to the user's email
+        await sendDeletionCodeEmail(email, code);
+
+        res.status(200).json({ success: true, message: 'Deletion code sent to your email.' });
+    } catch (err) {
+        console.error('Error requesting deletion code:', err);
+        res.status(500).json({ success: false, message: 'Could not send deletion code.' });
+    }
+});
+
+// 2. Verify the code and delete the account
+app.post('/api/verify-deletion', verifyToken, async (req, res) => {
+    const { uid } = req.user;
+    const { code } = req.body;
+
+    if (!code) {
+        return res.status(400).json({ success: false, message: 'Verification code is required.' });
+    }
+
+    try {
+        const { rows } = await pool.query(
+            'SELECT delete_code, delete_code_expires_at FROM users WHERE firebase_uid = $1',
+            [uid]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User not found.' });
+        }
+
+        const user = rows[0];
+        const now = new Date();
+
+        if (user.delete_code !== code) {
+            return res.status(400).json({ success: false, message: 'Invalid verification code.' });
+        }
+
+        if (now > user.delete_code_expires_at) {
+            return res.status(400).json({ success: false, message: 'Verification code has expired.' });
+        }
+
+        // --- If code is valid, proceed with deletion ---
+
+        // Delete from PostgreSQL first
+        await pool.query('DELETE FROM users WHERE firebase_uid = $1', [uid]);
+        // Then delete from Firebase Authentication
+        await admin.auth().deleteUser(uid);
+        
+        console.log(`Successfully deleted user ${uid} after code verification.`);
+        res.status(200).json({ success: true, message: 'Account deleted successfully.' });
+
+    } catch (err) {
+        console.error(`Failed to verify and delete user ${uid}:`, err);
+        res.status(500).json({ success: false, message: 'An error occurred during account deletion.' });
+    }
+});
+
+
 // --- Admin Routes ---
+// ... (product routes are unchanged)
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -278,6 +390,16 @@ app.get('/admin/products', async (req, res) => {
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    // NOTE: A schema 'productSchema' was referenced but not defined. 
+    // This will cause a server crash. Adding a basic definition.
+    const productSchema = Joi.object({
+        productName: Joi.string().required(),
+        price: Joi.number().required(),
+        salePrice: Joi.number().allow(null, ''),
+        stockQuantity: Joi.number().integer().required(),
+        description: Joi.string().required(),
+        imageUrl: Joi.string().uri().required()
+    });
     const { error, value } = productSchema.validate(req.body);
     if (error) { return res.status(400).send(error.details[0].message); }
     try {
@@ -309,6 +431,14 @@ app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { id } = req.params;
+    const productSchema = Joi.object({
+        productName: Joi.string().required(),
+        price: Joi.number().required(),
+        salePrice: Joi.number().allow(null, ''),
+        stockQuantity: Joi.number().integer().required(),
+        description: Joi.string().required(),
+        imageUrl: Joi.string().uri().required()
+    });
     const { error, value } = productSchema.validate(req.body);
     if (error) { return res.status(400).send(error.details[0].message); }
     try {
@@ -333,6 +463,8 @@ app.post('/admin/delete-product/:id', async (req, res) => {
     }
 });
 
+
+// Modified to add a delete button
 app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -343,14 +475,36 @@ app.get('/admin/users', async (req, res) => {
                 <td>${he.encode(user.phone || 'N/A')}</td> 
                 <td>${he.encode(user.firebase_uid)}</td>
                 <td>${new Date(user.created_at).toLocaleString()}</td>
+                <td>
+                    <form action="/admin/delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
+                        <button type="submit" onclick="return confirm('Are you sure you want to permanently delete this user? This cannot be undone.');" style="color:red; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Delete</button>
+                    </form>
+                </td>
             </tr>`).join('');
-        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Firebase UID</th><th>Registration Date</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
+        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Firebase UID</th><th>Registration Date</th><th>Actions</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
     } catch (err) {
         console.error("Error loading users page:", err);
         res.status(500).send('Error loading users page.');
     }
 });
 
+// New route for admin to delete a user
+app.post('/admin/delete-user/:uid', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { uid } = req.params;
+    try {
+        await pool.query('DELETE FROM users WHERE firebase_uid = $1', [uid]);
+        await admin.auth().deleteUser(uid);
+        console.log(`ADMIN ACTION: Successfully deleted user ${uid}`);
+        res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error(`ADMIN ACTION: Failed to delete user ${uid}:`, err);
+        res.status(500).send(`Error deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
+    }
+});
+
+// ... (order routes are unchanged)
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
