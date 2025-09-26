@@ -1,4 +1,4 @@
-// --- FULLY UPDATED server.js FILE --- (Copy everything below this line)
+// --- TEMPORARY server.js FILE TO FIX THE DATABASE ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -61,7 +61,6 @@ async function setupDatabase() {
         `);
         console.log('"orders" table is ready.');
         
-        // MODIFIED to include the 'phone' column
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, firebase_uid VARCHAR(255) UNIQUE NOT NULL,
@@ -70,6 +69,21 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
+
+        // --- TEMPORARY CODE TO ADD THE PHONE COLUMN ---
+        try {
+            await client.query('ALTER TABLE users ADD COLUMN phone VARCHAR(20)');
+            console.log('SUCCESS: "phone" column added to "users" table.');
+        } catch (err) {
+            // We expect an error if the column already exists, so we can ignore it.
+            if (err.message.includes('column "phone" of relation "users" already exists')) {
+                console.log('INFO: "phone" column already exists in "users" table.');
+            } else {
+                // If it's a different error, we should log it.
+                console.error('Error altering table:', err);
+            }
+        }
+        // --- END OF TEMPORARY CODE ---
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -231,9 +245,7 @@ app.post('/checkout', verifyToken, async (req, res) => {
     }
 });
 
-// MODIFIED to save the phone number
 app.post('/api/user-login', async (req, res) => {
-    // We now get the phone number from the request
     const { email, uid, phone } = req.body;
     if (!email || !uid) {
         return res.status(400).json({ error: 'Email and UID are required.' });
@@ -241,10 +253,8 @@ app.post('/api/user-login', async (req, res) => {
     try {
         const existingUser = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
         if (existingUser.rows.length === 0) {
-            // The INSERT query now includes the phone number
             await pool.query('INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)', [email, uid, phone]);
         } else {
-            // (Optional bonus) This will update the phone for an existing user if it's missing
             await pool.query('UPDATE users SET phone = $1 WHERE firebase_uid = $2 AND phone IS NULL', [phone, uid]);
         }
         res.status(200).json({ success: true, message: 'User session handled.' });
@@ -338,32 +348,24 @@ app.post('/admin/delete-product/:id', async (req, res) => {
     }
 });
 
-// MODIFIED to display the phone number
 app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
-        // 1. We now select the 'phone' column from the database
         const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at FROM users ORDER BY created_at DESC');
-
-        // 2. We add the phone number to the table row
         const usersHtml = rows.map(user => `<tr>
                 <td>${he.encode(user.email)}</td>
                 <td>${he.encode(user.phone || 'N/A')}</td> 
                 <td>${he.encode(user.firebase_uid)}</td>
                 <td>${new Date(user.created_at).toLocaleString()}</td>
             </tr>`).join('');
-        
-        // 3. We add a 'Phone' header to the table
         res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Firebase UID</th><th>Registration Date</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
-
     } catch (err) {
+        console.error("Error loading users page:", err); // Added for better logging
         res.status(500).send('Error loading users page.');
     }
 });
 
-
-// MODIFIED: View Orders now has a Delete button as well as Cancel
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -428,7 +430,6 @@ app.post('/admin/cancel-order/:id', async (req, res) => {
     }
 });
 
-// --- NEW: Delete Order Route ---
 app.post('/admin/delete-order/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
