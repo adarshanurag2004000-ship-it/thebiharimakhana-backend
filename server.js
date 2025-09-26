@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH PERMANENT DELETE FEATURE ---
+// --- TEMPORARY server.js FILE TO ADD STATUS COLUMN ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -74,16 +74,14 @@ async function setupDatabase() {
         `);
         console.log('"users" table is ready.');
 
+        // --- TEMPORARY CODE TO UPDATE THE ORDERS TABLE ---
         try {
-            await client.query('ALTER TABLE users ADD CONSTRAINT unique_phone UNIQUE (phone)');
-            console.log('SUCCESS: "users" table altered with unique phone constraint.');
+            await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'Processing'`);
+            console.log('SUCCESS: "orders" table altered with status column.');
         } catch (err) {
-            if (err.message.includes('constraint "unique_phone" for relation "users" already exists')) {
-                console.log('INFO: Unique phone constraint already exists.');
-            } else {
-                 console.error('Error adding unique constraint:', err);
-            }
+            console.error('Error altering orders table:', err);
         }
+        // --- END OF TEMPORARY CODE ---
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -166,12 +164,11 @@ async function sendDeletionCodeEmail(customerEmail, code) {
     }
 }
 
-
 // --- API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
-        res.send('The Bihari Makhana Backend is running and connected to the database.');
+        res.send('The Bihari Makhana Backend is running (temp - order status update) and connected to the database.');
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
@@ -194,7 +191,6 @@ app.post('/api/check-phone', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
-
 
 app.get('/api/products', async (req, res) => {
     try {
@@ -316,8 +312,6 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
     }
 });
 
-
-// --- DELETION ROUTES ---
 app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
     const { uid, email } = req.user;
     const code = crypto.randomInt(100000, 999999).toString();
@@ -465,8 +459,6 @@ app.post('/admin/delete-product/:id', async (req, res) => {
     }
 });
 
-
-// ** THIS IS THE MODIFIED ADMIN USERS ROUTE **
 app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -477,7 +469,6 @@ app.get('/admin/users', async (req, res) => {
                 ? `<span style="color:red;">Deleted on ${new Date(user.deleted_at).toLocaleDateString()}</span>` 
                 : '<span style="color:green;">Active</span>';
             
-            // This logic now shows a different button for soft-deleted users
             const actionButton = user.deleted_at
                 ? `<form action="/admin/hard-delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
                         <button type="submit" onclick="return confirm('PERMANENT ACTION: Are you sure you want to permanently erase this user\\'s history? This cannot be undone.');" style="color:red; background:none; border:none; padding:0; cursor:pointer; font-weight:bold; text-decoration:underline;">Permanently Delete</button>
@@ -506,9 +497,7 @@ app.post('/admin/delete-user/:uid', async (req, res) => {
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { uid } = req.params;
     try {
-        // Soft delete
         await pool.query('UPDATE users SET deleted_at = NOW() WHERE firebase_uid = $1', [uid]);
-        // Still hard delete from Firebase to block login
         await admin.auth().deleteUser(uid);
         console.log(`ADMIN ACTION: Successfully soft-deleted user ${uid}`);
         res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
@@ -518,13 +507,11 @@ app.post('/admin/delete-user/:uid', async (req, res) => {
     }
 });
 
-// ** NEW ROUTE TO PERMANENTLY DELETE A USER RECORD **
 app.post('/admin/hard-delete-user/:uid', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { uid } = req.params;
     try {
-        // This is a permanent deletion from your database
         await pool.query('DELETE FROM users WHERE firebase_uid = $1', [uid]);
         console.log(`ADMIN ACTION: Successfully PERMANENTLY deleted user record ${uid}`);
         res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
@@ -533,7 +520,6 @@ app.post('/admin/hard-delete-user/:uid', async (req, res) => {
         res.status(500).send(`Error permanently deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
     }
 });
-
 
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
