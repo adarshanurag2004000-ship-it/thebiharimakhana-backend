@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH ALL COUPON FEATURES ---
+// --- FINAL server.js WITH CORRECTED COUPON LOGIC ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -88,6 +88,13 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "coupons" table is ready.');
+        
+        try {
+            await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_used VARCHAR(255), ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10, 2) DEFAULT 0`);
+            console.log('SUCCESS: "orders" table updated for coupons.');
+        } catch (err) {
+            console.error('Error altering orders table for coupons:', err);
+        }
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -96,6 +103,7 @@ async function setupDatabase() {
     }
 }
 
+// ... All other functions are unchanged ...
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -109,8 +117,6 @@ async function verifyToken(req, res, next) {
         res.status(403).send('Unauthorized');
     }
 }
-
-// --- Email Functions ---
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total, discount = 0) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
@@ -139,7 +145,6 @@ async function sendOrderConfirmationEmail(customerEmail, customerName, order, ca
         console.error('Error sending confirmation email:', error);
     }
 }
-
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -154,7 +159,6 @@ async function sendOrderCancellationEmail(customerEmail, customerName, orderId) 
         console.error('Error sending cancellation email:', error);
     }
 }
-
 async function sendDeletionCodeEmail(customerEmail, code) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -172,7 +176,6 @@ async function sendDeletionCodeEmail(customerEmail, code) {
         console.error('Error sending deletion code email:', error);
     }
 }
-
 async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -189,9 +192,6 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
         console.error('Error sending shipped notification email:', error);
     }
 }
-
-
-// --- API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
@@ -200,7 +200,6 @@ app.get('/', async (req, res) => {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
 });
-
 app.post('/api/check-phone', async (req, res) => {
     const { phone } = req.body;
     if (!phone) {
@@ -218,7 +217,6 @@ app.post('/api/check-phone', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
-
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort } = req.query;
@@ -243,10 +241,12 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
+// ** THIS FUNCTION IS NOW CORRECTED **
 app.post('/api/apply-coupon', async (req, res) => {
     const { cart, couponCode } = req.body;
-    if (!cart || Object.keys(cart).length === 0 || !couponCode) {
-      return res.status(400).json({ success: false, message: 'Cart and coupon code are required.' });
+    // The only requirement is a cart. couponCode is optional.
+    if (!cart || Object.keys(cart).length === 0) {
+      return res.status(400).json({ success: false, message: 'Cart data is required.' });
     }
 
     try {
@@ -259,19 +259,23 @@ app.post('/api/apply-coupon', async (req, res) => {
         let discount = 0;
         let appliedCoupon = null;
 
-        const couponResult = await pool.query('SELECT * FROM coupons WHERE code = $1 AND is_active = TRUE', [couponCode.toUpperCase()]);
-        
-        if (couponResult.rows.length > 0) {
-            const coupon = couponResult.rows[0];
-            appliedCoupon = coupon.code;
-            if (coupon.discount_type === 'percentage') {
-                discount = subtotal * (parseFloat(coupon.discount_value) / 100);
+        // Only check for a coupon if a code was provided
+        if (couponCode) {
+            const couponResult = await pool.query('SELECT * FROM coupons WHERE code = $1 AND is_active = TRUE', [couponCode.toUpperCase()]);
+            
+            if (couponResult.rows.length > 0) {
+                const coupon = couponResult.rows[0];
+                appliedCoupon = coupon.code;
+                if (coupon.discount_type === 'percentage') {
+                    discount = subtotal * (parseFloat(coupon.discount_value) / 100);
+                } else {
+                    discount = parseFloat(coupon.discount_value);
+                }
+                discount = Math.min(subtotal, discount);
             } else {
-                discount = parseFloat(coupon.discount_value);
+                // If a code was provided but it's invalid, return an error
+                return res.status(404).json({ success: false, message: "Invalid or inactive coupon code."});
             }
-            discount = Math.min(subtotal, discount);
-        } else {
-            return res.status(404).json({ success: false, message: "Invalid or inactive coupon code."});
         }
 
         const total = subtotal - discount + shippingCost;
@@ -282,7 +286,6 @@ app.post('/api/apply-coupon', async (req, res) => {
         res.status(500).json({ success: false, message: "Error applying coupon."});
     }
 });
-
 
 app.post('/checkout', verifyToken, async (req, res) => {
     const { cart, addressDetails, paymentId, couponCode } = req.body;
@@ -315,7 +318,6 @@ app.post('/checkout', verifyToken, async (req, res) => {
         }
         
         const totalAmount = subtotal - discount + shippingCost;
-
         const query = `
             INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, user_uid, razorpay_payment_id, coupon_used, discount_amount)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at
@@ -644,8 +646,6 @@ app.post('/admin/delete-order/:id', async (req, res) => {
         res.status(500).send('Error deleting order.');
     }
 });
-
-// --- NEW ADMIN ROUTES FOR COUPONS ---
 app.get('/admin/coupons', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
