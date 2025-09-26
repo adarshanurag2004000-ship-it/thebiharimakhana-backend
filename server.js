@@ -1,4 +1,4 @@
-// --- TEMPORARY server.js FILE TO ADD deleted_at COLUMN ---
+// --- FINAL CLEAN server.js FILE WITH SOFT DELETE ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -73,15 +73,6 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
-
-        // --- TEMPORARY CODE TO UPDATE THE USERS TABLE ---
-        try {
-            await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE');
-            console.log('SUCCESS: "users" table altered successfully with deleted_at column.');
-        } catch (err) {
-            console.error('Error altering table for soft delete:', err);
-        }
-        // --- END OF TEMPORARY CODE ---
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -295,6 +286,7 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
         res.status(500).send('Error fetching orders.');
     }
 });
+
 
 // --- DELETION ROUTES ---
 app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
