@@ -1,4 +1,4 @@
-// --- CORRECTED TEMPORARY server.js FILE FOR SYNC AND CLEANUP ---
+// --- FINAL server.js WITH UNIQUE PHONE CHECK ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -65,7 +65,7 @@ async function setupDatabase() {
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, firebase_uid VARCHAR(255) UNIQUE NOT NULL,
-                phone VARCHAR(20),
+                phone VARCHAR(20) UNIQUE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 delete_code VARCHAR(6),
                 delete_code_expires_at TIMESTAMP WITH TIME ZONE,
@@ -73,6 +73,19 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
+        
+        // Since your data is clean, we can now safely add the unique constraint.
+        // This will only run once if the constraint doesn't exist.
+        try {
+            await client.query('ALTER TABLE users ADD CONSTRAINT unique_phone UNIQUE (phone)');
+            console.log('SUCCESS: "users" table altered with unique phone constraint.');
+        } catch (err) {
+            if (err.message.includes('constraint "unique_phone" for relation "users" already exists')) {
+                console.log('INFO: Unique phone constraint already exists.');
+            } else {
+                 console.error('Error adding unique constraint:', err);
+            }
+        }
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -81,93 +94,6 @@ async function setupDatabase() {
     }
 }
 
-// --- ** THIS IS THE CORRECTED SYNC FUNCTION ** ---
-app.get('/admin/sync-users', async (req, res) => {
-    if (req.query.password !== process.env.ADMIN_PASSWORD) {
-        return res.status(403).send('Access Denied');
-    }
-    try {
-        let message = '<h1>User Sync Report</h1>';
-        
-        const listUsersResult = await admin.auth().listUsers(1000);
-        const firebaseUsers = listUsersResult.users;
-        message += `<p>Found ${firebaseUsers.length} users in Firebase.</p>`;
-
-        const dbResult = await pool.query('SELECT firebase_uid, email FROM users');
-        const dbUids = new Set(dbResult.rows.map(row => row.firebase_uid));
-        const dbEmails = new Set(dbResult.rows.map(row => row.email));
-        message += `<p>Found ${dbUids.size} users in your database.</p><hr>`;
-
-        let usersAdded = 0;
-        let usersUpdated = 0;
-
-        for (const fbUser of firebaseUsers) {
-            // Case 1: User is perfectly in sync already.
-            if (dbUids.has(fbUser.uid)) {
-                continue; // Do nothing, go to the next user.
-            }
-
-            // Case 2: The user's UID is missing, but their email already exists in the DB.
-            // This means we have an old UID in the DB. We need to UPDATE it.
-            if (dbEmails.has(fbUser.email)) {
-                await pool.query(
-                    'UPDATE users SET firebase_uid = $1 WHERE email = $2',
-                    [fbUser.uid, fbUser.email]
-                );
-                message += `<p style="color:orange;">Updated UID for existing email: ${fbUser.email}</p>`;
-                usersUpdated++;
-            } 
-            // Case 3: The UID and Email are both missing. This is a truly new/missing user.
-            else {
-                await pool.query(
-                    'INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)',
-                    [fbUser.email, fbUser.uid, fbUser.phoneNumber || null]
-                );
-                message += `<p style="color:blue;">Added missing user: ${fbUser.email}</p>`;
-                usersAdded++;
-            }
-        }
-
-        if (usersAdded === 0 && usersUpdated === 0) {
-            message += '<p style="color:green;">All users are already in sync!</p>';
-        } else {
-            message += `<hr><p style="color:green;">Sync complete! Added: ${usersAdded}, Updated: ${usersUpdated}.</p>`;
-        }
-        res.send(message);
-    } catch (err) {
-        console.error('Error syncing users:', err);
-        res.status(500).send(`An error occurred: ${err.message}`);
-    }
-});
-
-app.get('/admin/cleanup-phones', async (req, res) => {
-    if (req.query.password !== process.env.ADMIN_PASSWORD) {
-        return res.status(403).send('Access Denied');
-    }
-    try {
-        const cleanupQuery = `
-            WITH numbered_users AS (
-                SELECT
-                    id,
-                    phone,
-                    ROW_NUMBER() OVER(PARTITION BY phone ORDER BY created_at ASC) as rn
-                FROM users
-                WHERE phone IS NOT NULL AND phone != ''
-            )
-            UPDATE users
-            SET phone = NULL
-            WHERE id IN (SELECT id FROM numbered_users WHERE rn > 1);
-        `;
-        const result = await pool.query(cleanupQuery);
-        res.send(`<h1 style="color:green;">Phone Cleanup Complete!</h1><p>${result.rowCount} duplicate phone numbers were cleared. It is now safe to proceed to the next step.</p>`);
-    } catch (err) {
-        console.error('Error cleaning up phone numbers:', err);
-        res.status(500).send(`An error occurred: ${err.message}`);
-    }
-});
-
-// The rest of this file is exactly the same as the "Final, Clean server.js (Version 2.1)" from our previous conversation
-// I am including it all so you have one complete file to copy.
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -181,6 +107,8 @@ async function verifyToken(req, res, next) {
         res.status(403).send('Unauthorized');
     }
 }
+
+// --- Email Functions (Unchanged) ---
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
@@ -206,6 +134,7 @@ async function sendOrderConfirmationEmail(customerEmail, customerName, order, ca
         console.error('Error sending confirmation email:', error);
     }
 }
+
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -220,6 +149,7 @@ async function sendOrderCancellationEmail(customerEmail, customerName, orderId) 
         console.error('Error sending cancellation email:', error);
     }
 }
+
 async function sendDeletionCodeEmail(customerEmail, code) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -238,34 +168,37 @@ async function sendDeletionCodeEmail(customerEmail, code) {
     }
 }
 
+
+// --- API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
-        res.send('The Bihari Makhana Backend is running (Data Fix Version) and connected to the database.');
+        res.send('The Bihari Makhana Backend is running and connected to the database.');
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
 });
 
-app.post('/api/user-login', async (req, res) => {
-    const { email, uid, phone } = req.body;
-    if (!email || !uid) {
-        return res.status(400).json({ error: 'Email and UID are required.' });
+// --- NEW ENDPOINT TO CHECK IF PHONE IS AVAILABLE ---
+app.post('/api/check-phone', async (req, res) => {
+    const { phone } = req.body;
+    if (!phone) {
+        return res.status(400).json({ error: 'Phone number is required.' });
     }
     try {
-        const existingUser = await pool.query('SELECT id FROM users WHERE firebase_uid = $1', [uid]);
-        if (existingUser.rows.length === 0) {
-            await pool.query('INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)', [email, uid, phone]);
-            console.log(`SUCCESS: New user registered in database: ${email}`);
+        const result = await pool.query('SELECT id FROM users WHERE phone = $1 AND deleted_at IS NULL', [phone]);
+        if (result.rows.length > 0) {
+            res.json({ isAvailable: false });
         } else {
-            console.log(`INFO: User ${email} already exists in database. Skipping insert.`);
+            res.json({ isAvailable: true });
         }
-        res.status(200).json({ success: true, message: 'User session handled.' });
     } catch (err) {
-        console.error("Error in /api/user-login:", err);
+        console.error('Error checking phone number:', err);
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
+
+
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort } = req.query;
@@ -353,6 +286,26 @@ app.post('/checkout', verifyToken, async (req, res) => {
     }
 });
 
+app.post('/api/user-login', async (req, res) => {
+    const { email, uid, phone } = req.body;
+    if (!email || !uid) {
+        return res.status(400).json({ error: 'Email and UID are required.' });
+    }
+    try {
+        const existingUser = await pool.query('SELECT id FROM users WHERE firebase_uid = $1', [uid]);
+        if (existingUser.rows.length === 0) {
+            await pool.query('INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)', [email, uid, phone]);
+            console.log(`SUCCESS: New user registered in database: ${email}`);
+        } else {
+            console.log(`INFO: User ${email} already exists in database. Skipping insert.`);
+        }
+        res.status(200).json({ success: true, message: 'User session handled.' });
+    } catch (err) {
+        console.error("Error in /api/user-login:", err);
+        res.status(500).json({ error: 'Internal server error.' });
+    }
+});
+
 app.get('/api/my-orders', verifyToken, async (req, res) => {
     try {
         const userUid = req.user.uid;
@@ -366,6 +319,8 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
     }
 });
 
+
+// --- DELETION ROUTES ---
 app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
     const { uid, email } = req.user;
     const code = crypto.randomInt(100000, 999999).toString();
@@ -425,53 +380,8 @@ app.post('/api/verify-deletion', verifyToken, async (req, res) => {
     }
 });
 
-app.get('/admin/users', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    try {
-        const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at FROM users ORDER BY created_at DESC');
-        const usersHtml = rows.map(user => {
-            const status = user.deleted_at 
-                ? `<span style="color:red;">Deleted on ${new Date(user.deleted_at).toLocaleDateString()}</span>` 
-                : '<span style="color:green;">Active</span>';
-            
-            const actionButton = user.deleted_at
-                ? '<span>(Account Deleted)</span>'
-                : `<form action="/admin/delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
-                        <button type="submit" onclick="return confirm('Are you sure you want to delete this user? They will not be able to log in again.');" style="color:red; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Delete</button>
-                    </form>`;
 
-            return `<tr>
-                <td>${he.encode(user.email)}</td>
-                <td>${he.encode(user.phone || 'N/A')}</td> 
-                <td>${status}</td>
-                <td>${new Date(user.created_at).toLocaleString()}</td>
-                <td>${actionButton}</td>
-            </tr>`
-        }).join('');
-        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Status</th><th>Registration Date</th><th>Actions</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
-    } catch (err) {
-        console.error("Error loading users page:", err);
-        res.status(500).send('Error loading users page.');
-    }
-});
-
-app.post('/admin/delete-user/:uid', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    const { uid } = req.params;
-    try {
-        await pool.query('UPDATE users SET deleted_at = NOW() WHERE firebase_uid = $1', [uid]);
-        await admin.auth().deleteUser(uid);
-        console.log(`ADMIN ACTION: Successfully soft-deleted user ${uid}`);
-        res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
-    } catch (err) {
-        console.error(`ADMIN ACTION: Failed to delete user ${uid}:`, err);
-        res.status(500).send(`Error deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
-    }
-});
-
-// All other admin routes follow...
+// --- Admin Routes ---
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -558,6 +468,53 @@ app.post('/admin/delete-product/:id', async (req, res) => {
     }
 });
 
+
+app.get('/admin/users', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at FROM users ORDER BY created_at DESC');
+        const usersHtml = rows.map(user => {
+            const status = user.deleted_at 
+                ? `<span style="color:red;">Deleted on ${new Date(user.deleted_at).toLocaleDateString()}</span>` 
+                : '<span style="color:green;">Active</span>';
+            
+            const actionButton = user.deleted_at
+                ? '<span>(Account Deleted)</span>'
+                : `<form action="/admin/delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
+                        <button type="submit" onclick="return confirm('Are you sure you want to delete this user? They will not be able to log in again.');" style="color:red; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Delete</button>
+                    </form>`;
+
+            return `<tr>
+                <td>${he.encode(user.email)}</td>
+                <td>${he.encode(user.phone || 'N/A')}</td> 
+                <td>${status}</td>
+                <td>${new Date(user.created_at).toLocaleString()}</td>
+                <td>${actionButton}</td>
+            </tr>`
+        }).join('');
+        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Status</th><th>Registration Date</th><th>Actions</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
+    } catch (err) {
+        console.error("Error loading users page:", err);
+        res.status(500).send('Error loading users page.');
+    }
+});
+
+app.post('/admin/delete-user/:uid', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { uid } = req.params;
+    try {
+        await pool.query('UPDATE users SET deleted_at = NOW() WHERE firebase_uid = $1', [uid]);
+        await admin.auth().deleteUser(uid);
+        console.log(`ADMIN ACTION: Successfully soft-deleted user ${uid}`);
+        res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error(`ADMIN ACTION: Failed to delete user ${uid}:`, err);
+        res.status(500).send(`Error deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
+    }
+});
+
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -633,6 +590,7 @@ app.post('/admin/delete-order/:id', async (req, res) => {
         res.status(500).send('Error deleting order.');
     }
 });
+
 
 app.use((err, req, res, next) => {
     console.error(err.stack);
