@@ -1,4 +1,4 @@
-// --- FINAL CORRECTED server.js FILE (Version 2.1) ---
+// --- TEMPORARY server.js FILE FOR SYNC AND CLEANUP ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -81,6 +81,80 @@ async function setupDatabase() {
     }
 }
 
+// ... All other functions and routes from the previous version are included,
+// but the two new special routes are added below.
+
+// --- SPECIAL ADMIN ROUTE TO SYNC USERS ---
+app.get('/admin/sync-users', async (req, res) => {
+    if (req.query.password !== process.env.ADMIN_PASSWORD) {
+        return res.status(403).send('Access Denied');
+    }
+    try {
+        let message = '<h1>User Sync Report</h1>';
+        
+        // 1. Get all users from Firebase Auth
+        const listUsersResult = await admin.auth().listUsers(1000);
+        const firebaseUsers = listUsersResult.users;
+        message += `<p>Found ${firebaseUsers.length} users in Firebase.</p>`;
+
+        // 2. Get all UIDs from our database
+        const dbResult = await pool.query('SELECT firebase_uid FROM users');
+        const dbUids = new Set(dbResult.rows.map(row => row.firebase_uid));
+        message += `<p>Found ${dbUids.size} users in your database.</p>`;
+
+        // 3. Find users that are in Firebase but not in our database
+        const missingUsers = firebaseUsers.filter(fbUser => !dbUids.has(fbUser.uid));
+        
+        if (missingUsers.length === 0) {
+            message += '<p style="color:green;">All users are already in sync!</p>';
+        } else {
+            message += `<p style="color:blue;">Adding ${missingUsers.length} missing users to the database...</p><ul>`;
+            for (const user of missingUsers) {
+                await pool.query(
+                    'INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)',
+                    [user.email, user.uid, user.phoneNumber || null]
+                );
+                message += `<li>Added: ${user.email}</li>`;
+            }
+            message += '</ul><p style="color:green;">Sync complete!</p>';
+        }
+        res.send(message);
+    } catch (err) {
+        console.error('Error syncing users:', err);
+        res.status(500).send(`An error occurred: ${err.message}`);
+    }
+});
+
+// --- SPECIAL ADMIN ROUTE TO CLEANUP PHONES ---
+app.get('/admin/cleanup-phones', async (req, res) => {
+    if (req.query.password !== process.env.ADMIN_PASSWORD) {
+        return res.status(403).send('Access Denied');
+    }
+    try {
+        const cleanupQuery = `
+            WITH numbered_users AS (
+                SELECT
+                    id,
+                    phone,
+                    ROW_NUMBER() OVER(PARTITION BY phone ORDER BY created_at ASC) as rn
+                FROM users
+                WHERE phone IS NOT NULL AND phone != ''
+            )
+            UPDATE users
+            SET phone = NULL
+            WHERE id IN (SELECT id FROM numbered_users WHERE rn > 1);
+        `;
+        const result = await pool.query(cleanupQuery);
+        res.send(`<h1 style="color:green;">Phone Cleanup Complete!</h1><p>${result.rowCount} duplicate phone numbers were cleared. It is now safe to proceed to the next step.</p>`);
+    } catch (err) {
+        console.error('Error cleaning up phone numbers:', err);
+        res.status(500).send(`An error occurred: ${err.message}`);
+    }
+});
+
+// All other routes (/, /api/products, /api/user-login, /admin/users, etc.) are exactly the same as the previous 'Version 2.1' file.
+// I am including the full code to avoid any mistakes.
+
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -95,7 +169,6 @@ async function verifyToken(req, res, next) {
     }
 }
 
-// --- Email Functions (Unchanged) ---
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
@@ -155,17 +228,35 @@ async function sendDeletionCodeEmail(customerEmail, code) {
     }
 }
 
-
-// --- API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
-        res.send('The Bihari Makhana Backend is running (Version 2.1) and connected to the database.');
+        res.send('The Bihari Makhana Backend is running (Data Fix Version) and connected to the database.');
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
 });
 
+app.post('/api/user-login', async (req, res) => {
+    const { email, uid, phone } = req.body;
+    if (!email || !uid) {
+        return res.status(400).json({ error: 'Email and UID are required.' });
+    }
+    try {
+        const existingUser = await pool.query('SELECT id FROM users WHERE firebase_uid = $1', [uid]);
+        if (existingUser.rows.length === 0) {
+            await pool.query('INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)', [email, uid, phone]);
+            console.log(`SUCCESS: New user registered in database: ${email}`);
+        } else {
+            console.log(`INFO: User ${email} already exists in database. Skipping insert.`);
+        }
+        res.status(200).json({ success: true, message: 'User session handled.' });
+    } catch (err) {
+        console.error("Error in /api/user-login:", err);
+        res.status(500).json({ error: 'Internal server error.' });
+    }
+});
+// All other routes from V2.1 are also here...
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort } = req.query;
@@ -253,31 +344,6 @@ app.post('/checkout', verifyToken, async (req, res) => {
     }
 });
 
-// ** THIS FUNCTION IS NOW SIMPLIFIED AND CORRECTED **
-app.post('/api/user-login', async (req, res) => {
-    const { email, uid, phone } = req.body;
-    if (!email || !uid) {
-        return res.status(400).json({ error: 'Email and UID are required.' });
-    }
-    try {
-        // Check if the user already exists in our database.
-        const existingUser = await pool.query('SELECT id FROM users WHERE firebase_uid = $1', [uid]);
-
-        // If the user does NOT exist, add them.
-        if (existingUser.rows.length === 0) {
-            await pool.query('INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)', [email, uid, phone]);
-            console.log(`SUCCESS: New user registered in database: ${email}`);
-        } else {
-            // If they already exist, we do nothing. Just log it for our info.
-            console.log(`INFO: User ${email} already exists in database. Skipping insert.`);
-        }
-        res.status(200).json({ success: true, message: 'User session handled.' });
-    } catch (err) {
-        console.error("Error in /api/user-login:", err);
-        res.status(500).json({ error: 'Internal server error.' });
-    }
-});
-
 app.get('/api/my-orders', verifyToken, async (req, res) => {
     try {
         const userUid = req.user.uid;
@@ -291,8 +357,6 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
     }
 });
 
-
-// --- DELETION ROUTES ---
 app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
     const { uid, email } = req.user;
     const code = crypto.randomInt(100000, 999999).toString();
@@ -352,8 +416,6 @@ app.post('/api/verify-deletion', verifyToken, async (req, res) => {
     }
 });
 
-
-// --- Admin Routes ---
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -440,7 +502,6 @@ app.post('/admin/delete-product/:id', async (req, res) => {
     }
 });
 
-// ** THIS FUNCTION IS NOW SIMPLIFIED AND CORRECTED **
 app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
