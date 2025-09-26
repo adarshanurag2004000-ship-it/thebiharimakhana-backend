@@ -1,4 +1,4 @@
-// --- TEMPORARY server.js FILE TO FIX THE DATABASE ---
+// --- FINAL CLEAN server.js FILE ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -69,21 +69,6 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
-
-        // --- TEMPORARY CODE TO ADD THE PHONE COLUMN ---
-        try {
-            await client.query('ALTER TABLE users ADD COLUMN phone VARCHAR(20)');
-            console.log('SUCCESS: "phone" column added to "users" table.');
-        } catch (err) {
-            // We expect an error if the column already exists, so we can ignore it.
-            if (err.message.includes('column "phone" of relation "users" already exists')) {
-                console.log('INFO: "phone" column already exists in "users" table.');
-            } else {
-                // If it's a different error, we should log it.
-                console.error('Error altering table:', err);
-            }
-        }
-        // --- END OF TEMPORARY CODE ---
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -361,7 +346,7 @@ app.get('/admin/users', async (req, res) => {
             </tr>`).join('');
         res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Firebase UID</th><th>Registration Date</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
     } catch (err) {
-        console.error("Error loading users page:", err); // Added for better logging
+        console.error("Error loading users page:", err);
         res.status(500).send('Error loading users page.');
     }
 });
