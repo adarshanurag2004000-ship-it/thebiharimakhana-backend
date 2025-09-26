@@ -1,4 +1,4 @@
-// --- TEMPORARY server.js FILE TO ADD DELETION COLUMNS ---
+// --- FINAL CLEAN server.js FILE ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -73,15 +73,6 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
-
-        // --- TEMPORARY CODE TO UPDATE THE USERS TABLE ---
-        try {
-            await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_code VARCHAR(6), ADD COLUMN IF NOT EXISTS delete_code_expires_at TIMESTAMP WITH TIME ZONE');
-            console.log('SUCCESS: "users" table altered successfully with deletion columns.');
-        } catch (err) {
-            console.error('Error altering table:', err);
-        }
-        // --- END OF TEMPORARY CODE ---
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
