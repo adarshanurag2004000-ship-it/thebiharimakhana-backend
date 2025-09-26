@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH UNIQUE PHONE CHECK ---
+// --- FINAL server.js WITH PERMANENT DELETE FEATURE ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -73,9 +73,7 @@ async function setupDatabase() {
             );
         `);
         console.log('"users" table is ready.');
-        
-        // Since your data is clean, we can now safely add the unique constraint.
-        // This will only run once if the constraint doesn't exist.
+
         try {
             await client.query('ALTER TABLE users ADD CONSTRAINT unique_phone UNIQUE (phone)');
             console.log('SUCCESS: "users" table altered with unique phone constraint.');
@@ -108,7 +106,7 @@ async function verifyToken(req, res, next) {
     }
 }
 
-// --- Email Functions (Unchanged) ---
+// --- Email Functions ---
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
@@ -179,7 +177,6 @@ app.get('/', async (req, res) => {
     }
 });
 
-// --- NEW ENDPOINT TO CHECK IF PHONE IS AVAILABLE ---
 app.post('/api/check-phone', async (req, res) => {
     const { phone } = req.body;
     if (!phone) {
@@ -469,6 +466,7 @@ app.post('/admin/delete-product/:id', async (req, res) => {
 });
 
 
+// ** THIS IS THE MODIFIED ADMIN USERS ROUTE **
 app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -479,10 +477,13 @@ app.get('/admin/users', async (req, res) => {
                 ? `<span style="color:red;">Deleted on ${new Date(user.deleted_at).toLocaleDateString()}</span>` 
                 : '<span style="color:green;">Active</span>';
             
+            // This logic now shows a different button for soft-deleted users
             const actionButton = user.deleted_at
-                ? '<span>(Account Deleted)</span>'
+                ? `<form action="/admin/hard-delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
+                        <button type="submit" onclick="return confirm('PERMANENT ACTION: Are you sure you want to permanently erase this user\\'s history? This cannot be undone.');" style="color:red; background:none; border:none; padding:0; cursor:pointer; font-weight:bold; text-decoration:underline;">Permanently Delete</button>
+                    </form>`
                 : `<form action="/admin/delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
-                        <button type="submit" onclick="return confirm('Are you sure you want to delete this user? They will not be able to log in again.');" style="color:red; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Delete</button>
+                        <button type="submit" onclick="return confirm('Are you sure you want to delete this user? They will not be able to log in again.');" style="color:orange; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Delete (Deactivate)</button>
                     </form>`;
 
             return `<tr>
@@ -505,7 +506,9 @@ app.post('/admin/delete-user/:uid', async (req, res) => {
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { uid } = req.params;
     try {
+        // Soft delete
         await pool.query('UPDATE users SET deleted_at = NOW() WHERE firebase_uid = $1', [uid]);
+        // Still hard delete from Firebase to block login
         await admin.auth().deleteUser(uid);
         console.log(`ADMIN ACTION: Successfully soft-deleted user ${uid}`);
         res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
@@ -514,6 +517,23 @@ app.post('/admin/delete-user/:uid', async (req, res) => {
         res.status(500).send(`Error deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
     }
 });
+
+// ** NEW ROUTE TO PERMANENTLY DELETE A USER RECORD **
+app.post('/admin/hard-delete-user/:uid', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { uid } = req.params;
+    try {
+        // This is a permanent deletion from your database
+        await pool.query('DELETE FROM users WHERE firebase_uid = $1', [uid]);
+        console.log(`ADMIN ACTION: Successfully PERMANENTLY deleted user record ${uid}`);
+        res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error(`ADMIN ACTION: Failed to permanently delete user ${uid}:`, err);
+        res.status(500).send(`Error permanently deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
+    }
+});
+
 
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
