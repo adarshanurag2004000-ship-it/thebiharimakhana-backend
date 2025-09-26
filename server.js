@@ -1,4 +1,4 @@
-// --- TEMPORARY server.js FILE TO ADD STATUS COLUMN ---
+// --- FINAL server.js WITH ORDER STATUS FEATURES ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -52,12 +52,15 @@ async function setupDatabase() {
             );
         `);
         console.log('"products" table is ready.');
+        
+        // Final schema for orders table
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY, customer_name VARCHAR(255) NOT NULL, phone_number VARCHAR(20) NOT NULL,
                 address TEXT NOT NULL, cart_items JSONB, order_amount NUMERIC(10, 2) NOT NULL,
                 razorpay_payment_id VARCHAR(255) NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                user_uid VARCHAR(255) 
+                user_uid VARCHAR(255),
+                status VARCHAR(50) NOT NULL DEFAULT 'Processing'
             );
         `);
         console.log('"orders" table is ready.');
@@ -74,16 +77,8 @@ async function setupDatabase() {
         `);
         console.log('"users" table is ready.');
 
-        // --- TEMPORARY CODE TO UPDATE THE ORDERS TABLE ---
-        try {
-            await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'Processing'`);
-            console.log('SUCCESS: "orders" table altered with status column.');
-        } catch (err) {
-            console.error('Error altering orders table:', err);
-        }
-        // --- END OF TEMPORARY CODE ---
-
-    } catch (err) {
+    } catch (err)
+ {
         console.error('Error setting up database tables:', err);
     } finally {
         client.release();
@@ -164,11 +159,30 @@ async function sendDeletionCodeEmail(customerEmail, code) {
     }
 }
 
+// --- NEW EMAIL FUNCTION FOR SHIPPED ORDERS ---
+async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
+    const emailHtml = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
+        <h1 style="color: #3B82F6; text-align: center;">Your Order has Shipped!</h1>
+        <p>Hi ${he.encode(customerName)},</p>
+        <p>Great news! Your order #${orderId} from The Bihari Makhana has been shipped and is on its way to you.</p>
+        <p>Thank you for your patience.</p>
+      </div>`;
+    const msg = { to: customerEmail, from: 'thebiharimakhana@gmail.com', subject: `Your The Bihari Makhana Order #${orderId} has Shipped!`, html: emailHtml };
+    try {
+        await sgMail.send(msg);
+        console.log('Shipped notification email sent to', customerEmail);
+    } catch (error) {
+        console.error('Error sending shipped notification email:', error);
+    }
+}
+
+
 // --- API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
-        res.send('The Bihari Makhana Backend is running (temp - order status update) and connected to the database.');
+        res.send('The Bihari Makhana Backend is running and connected to the database.');
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
@@ -299,19 +313,23 @@ app.post('/api/user-login', async (req, res) => {
     }
 });
 
+// MODIFIED TO INCLUDE ORDER STATUS
 app.get('/api/my-orders', verifyToken, async (req, res) => {
     try {
         const userUid = req.user.uid;
         const { rows } = await pool.query(
-            'SELECT id, order_amount, created_at, cart_items FROM orders WHERE user_uid = $1 ORDER BY created_at DESC', 
+            'SELECT id, order_amount, created_at, cart_items, status FROM orders WHERE user_uid = $1 ORDER BY created_at DESC', 
             [userUid]
         );
         res.json(rows);
     } catch (err) {
+        console.error("Error fetching user orders:", err);
         res.status(500).send('Error fetching orders.');
     }
 });
 
+
+// --- DELETION ROUTES ---
 app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
     const { uid, email } = req.user;
     const code = crypto.randomInt(100000, 999999).toString();
@@ -521,12 +539,14 @@ app.post('/admin/hard-delete-user/:uid', async (req, res) => {
     }
 });
 
+// MODIFIED TO SHOW AND UPDATE ORDER STATUS
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
-        let html = `<h1>All Orders</h1><table border="1" style="width:100%; border-collapse: collapse;"><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead><tbody>`;
+        let html = `<h1>All Orders</h1><table border="1" style="width:100%; border-collapse: collapse;"><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead><tbody>`;
+        
         rows.forEach(order => {
             let itemsHtml = 'N/A';
             if (order.cart_items) {
@@ -535,19 +555,26 @@ app.get('/view-orders', async (req, res) => {
                     itemsHtml = '<ul>' + Object.keys(items).map(key => `<li>${he.encode(key)} (x${items[key].quantity})</li>`).join('') + '</ul>';
                 } catch (e) { itemsHtml = '<span style="color:red;">Invalid data</span>'; }
             }
+
+            const statuses = ['Processing', 'Shipped', 'Delivered', 'Cancelled'];
+            const statusOptions = statuses.map(s => `<option value="${s}" ${order.status === s ? 'selected' : ''}>${s}</option>`).join('');
+
             html += `
                 <tr>
                     <td>${order.id}</td>
                     <td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td>
                     <td>${he.encode(order.address)}</td>
                     <td>₹${order.order_amount}</td>
+                    <td>
+                        <form action="/admin/update-order-status/${order.id}?password=${encodeURIComponent(password)}" method="POST">
+                            <select name="newStatus">${statusOptions}</select>
+                            <button type="submit">Update</button>
+                        </form>
+                    </td>
                     <td>${he.encode(order.razorpay_payment_id)}</td>
                     <td>${new Date(order.created_at).toLocaleString()}</td>
                     <td>${itemsHtml}</td>
                     <td>
-                        <form action="/admin/cancel-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block; margin-bottom: 5px;">
-                            <button type="submit" onclick="return confirm('Cancel this order and notify the customer?');" style="color:orange;">Cancel & Notify</button>
-                        </form>
                         <form action="/admin/delete-order/${order.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block;">
                             <button type="submit" onclick="return confirm('Permanently DELETE this order? This cannot be undone.');" style="color:red;">Delete</button>
                         </form>
@@ -558,33 +585,42 @@ app.get('/view-orders', async (req, res) => {
         html += '</tbody></table>';
         res.send(html);
     } catch (err) {
+        console.error("Error loading orders page:", err);
         res.status(500).send('Internal Server Error');
     }
 });
 
-app.post('/admin/cancel-order/:id', async (req, res) => {
+// NEW ROUTE TO UPDATE AN ORDER'S STATUS
+app.post('/admin/update-order-status/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { id } = req.params;
+    const { newStatus } = req.body;
+
     try {
-        const { id } = req.params;
-        const orderResult = await pool.query('SELECT user_uid, customer_name FROM orders WHERE id = $1', [id]);
-        if (orderResult.rows.length === 0) {
-            return res.status(404).send('Order not found.');
+        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
+        
+        // If the new status is "Shipped", send an email
+        if (newStatus === 'Shipped') {
+            const orderResult = await pool.query('SELECT user_uid, customer_name FROM orders WHERE id = $1', [id]);
+            if (orderResult.rows.length > 0) {
+                const order = orderResult.rows[0];
+                const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
+                if (userResult.rows.length > 0) {
+                    const customerEmail = userResult.rows[0].email;
+                    await sendOrderShippedEmail(customerEmail, order.customer_name, id);
+                }
+            }
         }
-        const order = orderResult.rows[0];
-        const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
-        if (userResult.rows.length === 0) {
-            return res.status(404).send('Customer email not found.');
-        }
-        const customerEmail = userResult.rows[0].email;
-        await sendOrderCancellationEmail(customerEmail, order.customer_name, id);
-        await pool.query('DELETE FROM orders WHERE id = $1', [id]);
-        res.send(`Order #${id} has been CANCELLED and a notification email has been sent to ${customerEmail}. <a href="/view-orders?password=${encodeURIComponent(password)}">Go back to orders.</a>`);
+        
+        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
     } catch (err) {
-        res.status(500).send('Error cancelling order.');
+        console.error(`Error updating status for order ${id}:`, err);
+        res.status(500).send('Error updating order status.');
     }
 });
 
+// This route is no longer needed as Cancel is a status. Keeping delete.
 app.post('/admin/delete-order/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
