@@ -1,4 +1,4 @@
-// --- FINAL CLEAN server.js FILE WITH SOFT DELETE ---
+// --- FINAL server.js FILE WITH VERSION 2.0 MARKER ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -160,7 +160,8 @@ async function sendDeletionCodeEmail(customerEmail, code) {
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
-        res.send('The Bihari Makhana Backend is running and connected to the database.');
+        // MODIFIED FOR DEPLOYMENT TEST
+        res.send('The Bihari Makhana Backend is running (Version 2.0) and connected to the database.');
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
@@ -264,7 +265,7 @@ app.post('/api/user-login', async (req, res) => {
             await pool.query('INSERT INTO users (email, firebase_uid, phone) VALUES ($1, $2, $3)', [email, uid, phone]);
             console.log(`SUCCESS: New user registered in database: ${email}`);
         } else {
-            await pool.query('UPDATE users SET phone = $1 WHERE firebase_uid = $2 AND phone IS NULL', [phone, uid]);
+            await pool.query('UPDATE users SET phone = $1, deleted_at = NULL WHERE firebase_uid = $2 AND phone IS NULL', [phone, uid]);
             console.log(`INFO: Existing user session handled for: ${email}`);
         }
         res.status(200).json({ success: true, message: 'User session handled.' });
