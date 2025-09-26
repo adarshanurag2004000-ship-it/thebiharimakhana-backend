@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH COUPON ADMIN PANEL ---
+// --- FINAL server.js WITH ALL COUPON FEATURES ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -86,6 +86,14 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "coupons" table is ready.');
+        
+        // Safely add new columns to orders table for coupon tracking
+        try {
+            await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_used VARCHAR(255), ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10, 2) DEFAULT 0`);
+            console.log('SUCCESS: "orders" table updated for coupons.');
+        } catch (err) {
+            console.error('Error altering orders table for coupons:', err);
+        }
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -94,7 +102,7 @@ async function setupDatabase() {
     }
 }
 
-// ... All other functions are the same as before ...
+// ... All other functions are unchanged ...
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -108,20 +116,23 @@ async function verifyToken(req, res, next) {
         res.status(403).send('Unauthorized');
     }
 }
-async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total) {
+async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total, discount = 0) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
         const item = cart[name];
         const displayName = name.charAt(0).toUpperCase() + name.slice(1);
         return `<tr><td style="padding: 10px; border-bottom: 1px solid #ddd;">${displayName} (x${item.quantity})</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">₹${(item.price * item.quantity).toFixed(2)}</td></tr>`;
     }).join('');
+    
+    const discountHtml = discount > 0 ? `<tr><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right; color: green;">Discount:</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right; color: green;">- ₹${discount.toFixed(2)}</td></tr>` : '';
+    
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
         <h1 style="color: #F97316; text-align: center;">Thank You For Your Order!</h1><p>Hi ${he.encode(customerName)},</p><p>We've received your order and will process it shortly. Here are the details:</p>
         <div style="border: 1px solid #eee; padding: 15px; margin: 20px 0;"><h2 style="margin-top: 0;">Invoice #${order.id}</h2><p><strong>Order Date:</strong> ${orderDate}</p>
           <table style="width: 100%; border-collapse: collapse;">
             <thead><tr><th style="padding: 10px; border-bottom: 2px solid #ddd; text-align: left;">Item</th><th style="padding: 10px; border-bottom: 2px solid #ddd; text-align: right;">Price</th></tr></thead>
-            <tbody>${itemsHtml}<tr><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">Subtotal:</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">₹${subtotal.toFixed(2)}</td></tr><tr><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">Shipping:</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">₹${shippingCost.toFixed(2)}</td></tr><tr><td style="padding: 10px; font-weight: bold; text-align: right;">Total:</td><td style="padding: 10px; font-weight: bold; text-align: right;">₹${total.toFixed(2)}</td></tr></tbody>
+            <tbody>${itemsHtml}<tr><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">Subtotal:</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">₹${subtotal.toFixed(2)}</td></tr>${discountHtml}<tr><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">Shipping:</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">₹${shippingCost.toFixed(2)}</td></tr><tr><td style="padding: 10px; font-weight: bold; text-align: right;">Total:</td><td style="padding: 10px; font-weight: bold; text-align: right;">₹${total.toFixed(2)}</td></tr></tbody>
           </table>
         </div><p style="font-size: 12px; color: #777; text-align: center;">This is an automated mail, please do not reply. For any questions, contact us at <a href="mailto:thebiharimakhana@gmail.com">thebiharimakhana@gmail.com</a>.</p>
       </div>`;
@@ -228,62 +239,99 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
-app.post('/api/calculate-total', (req, res) => {
-    const { cart } = req.body;
+
+// MODIFIED TO HANDLE COUPONS
+app.post('/api/calculate-total', async (req, res) => {
+    const { cart, couponCode } = req.body;
     if (!cart || Object.keys(cart).length === 0) {
       return res.status(400).json({ error: 'Cart data is missing or empty.' });
     }
-    let subtotal = 0;
-    const cartItems = Object.keys(cart);
-    for (const productName of cartItems) {
-      const item = cart[productName];
-      if (typeof item.price === 'number' && typeof item.quantity === 'number') {
-          subtotal += item.price * item.quantity;
-      }
+
+    try {
+        let subtotal = 0;
+        for (const productName in cart) {
+            const item = cart[productName];
+            subtotal += item.price * item.quantity;
+        }
+
+        let shippingCost = subtotal >= 500 ? 0 : 99;
+        let discount = 0;
+        let appliedCoupon = null;
+
+        if (couponCode) {
+            const couponResult = await pool.query('SELECT * FROM coupons WHERE code = $1 AND is_active = TRUE', [couponCode.toUpperCase()]);
+            if (couponResult.rows.length > 0) {
+                const coupon = couponResult.rows[0];
+                appliedCoupon = coupon.code;
+                if (coupon.discount_type === 'percentage') {
+                    discount = subtotal * (coupon.discount_value / 100);
+                } else { // fixed amount
+                    discount = coupon.discount_value;
+                }
+                discount = Math.min(subtotal, discount); // Cannot discount more than the subtotal
+            }
+        }
+
+        const total = subtotal - discount + shippingCost;
+        res.json({ success: true, subtotal, shippingCost, discount, total, appliedCoupon });
+
+    } catch (err) {
+        console.error("Error in calculate-total:", err);
+        res.status(500).json({ success: false, message: "Error calculating total."});
     }
-    let shippingCost = 0;
-    const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subsciption');
-    if (isOnlySubscription) {
-        shippingCost = 0;
-    } else {
-        shippingCost = subtotal >= 500 ? 0 : 99;
-    }
-    const total = subtotal + shippingCost;
-    res.json({ subtotal: subtotal, shippingCost: shippingCost, total: total });
 });
+
+// MODIFIED TO HANDLE COUPONS SECURELY
 app.post('/checkout', verifyToken, async (req, res) => {
-    const { cart, addressDetails, paymentId } = req.body;
+    const { cart, addressDetails, paymentId, couponCode } = req.body;
     const user = req.user; 
     if (!cart || !addressDetails || !paymentId || Object.keys(cart).length === 0) {
         return res.status(400).json({ success: false, message: 'Missing required order information.' });
     }
     try {
+        // --- Securely recalculate all totals on the backend ---
         let subtotal = 0;
-        const cartItems = Object.keys(cart);
-        for (const productName of cartItems) {
-            const item = cart[productName];
-            subtotal += item.price * item.quantity;
+        for (const productName in cart) {
+            subtotal += cart[productName].price * cart[productName].quantity;
         }
-        let shippingCost = 0;
-        const isOnlySubscription = cartItems.length === 1 && cartItems[0].toLowerCase().includes('subsciption');
-        if (isOnlySubscription) {
-            shippingCost = 0;
-        } else {
-            shippingCost = subtotal >= 500 ? 0 : 99;
+        
+        let shippingCost = subtotal >= 500 ? 0 : 99;
+        let discount = 0;
+        let appliedCouponCode = null;
+
+        if (couponCode) {
+            const couponResult = await pool.query('SELECT * FROM coupons WHERE code = $1 AND is_active = TRUE', [couponCode.toUpperCase()]);
+            if (couponResult.rows.length > 0) {
+                const coupon = couponResult.rows[0];
+                appliedCouponCode = coupon.code;
+                if (coupon.discount_type === 'percentage') {
+                    discount = subtotal * (coupon.discount_value / 100);
+                } else {
+                    discount = coupon.discount_value;
+                }
+                discount = Math.min(subtotal, discount);
+            }
         }
-        const totalAmount = subtotal + shippingCost;
+        
+        const totalAmount = subtotal - discount + shippingCost;
+        // --- End of secure recalculation ---
+
         const query = `
-            INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, razorpay_payment_id, user_uid)
-            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at
+            INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, user_uid, razorpay_payment_id, coupon_used, discount_amount)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at
         `;
         const values = [
-            addressDetails.name, addressDetails.phone, addressDetails.address, JSON.stringify(cart),
-            totalAmount, paymentId, user.uid
+            addressDetails.name, addressDetails.phone, addressDetails.address, 
+            JSON.stringify(cart), totalAmount, user.uid, paymentId,
+            appliedCouponCode, discount
         ];
+        
         const orderResult = await pool.query(query, values);
         const newOrder = orderResult.rows[0];
-        await sendOrderConfirmationEmail(user.email, addressDetails.name, newOrder, cart, subtotal, shippingCost, totalAmount);
+        
+        await sendOrderConfirmationEmail(user.email, addressDetails.name, newOrder, cart, subtotal, shippingCost, totalAmount, discount);
         res.json({ success: true, message: 'Order placed successfully!' });
+
     } catch (err) {
         console.error('Error during checkout:', err);
         res.status(500).json({ success: false, message: 'An internal server error occurred.' });
@@ -325,7 +373,6 @@ app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
     const { uid, email } = req.user;
     const code = crypto.randomInt(100000, 999999).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
     try {
         await pool.query(
             'UPDATE users SET delete_code = $1, delete_code_expires_at = $2 WHERE firebase_uid = $3',
@@ -341,38 +388,29 @@ app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
 app.post('/api/verify-deletion', verifyToken, async (req, res) => {
     const { uid } = req.user;
     const { code } = req.body;
-
     if (!code) {
         return res.status(400).json({ success: false, message: 'Verification code is required.' });
     }
-
     try {
         const { rows } = await pool.query(
             'SELECT delete_code, delete_code_expires_at FROM users WHERE firebase_uid = $1',
             [uid]
         );
-
         if (rows.length === 0) {
             return res.status(404).json({ success: false, message: 'User not found.' });
         }
-
         const user = rows[0];
         const now = new Date();
-
         if (user.delete_code !== code) {
             return res.status(400).json({ success: false, message: 'Invalid verification code.' });
         }
-
         if (now > user.delete_code_expires_at) {
             return res.status(400).json({ success: false, message: 'Verification code has expired.' });
         }
-
         await pool.query('UPDATE users SET deleted_at = NOW() WHERE firebase_uid = $1', [uid]);
         await admin.auth().deleteUser(uid);
-        
         console.log(`Successfully soft-deleted user ${uid} after code verification.`);
         res.status(200).json({ success: true, message: 'Account deleted successfully.' });
-
     } catch (err) {
         console.error(`Failed to verify and delete user ${uid}:`, err);
         res.status(500).json({ success: false, message: 'An error occurred during account deletion.' });
@@ -384,7 +422,7 @@ app.get('/admin/products', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM products ORDER BY id ASC');
         const productsHtml = rows.map(p => `<tr><td>${p.id}</td><td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td><td>${he.encode(p.name)}</td><td>${p.price}</td><td>${p.sale_price || 'N/A'}</td><td>${p.stock_quantity}</td><td><a href="/admin/edit-product/${p.id}?password=${encodeURIComponent(password)}">Edit</a><form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;"><button type="submit" onclick="return confirm('Are you sure?');">Delete</button></form></td></tr>`).join('');
-        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
+        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
     } catch (err) {
         res.status(500).send('Error loading product management page.');
     }
@@ -522,16 +560,13 @@ app.post('/admin/update-order-status/:id', async (req, res) => {
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { id } = req.params;
     const { newStatus } = req.body;
-
     try {
         const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
         if (orderCheck.rows.length === 0) {
             return res.status(404).send("Order not found.");
         }
         const oldStatus = orderCheck.rows[0].status;
-
         await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
-        
         if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
             const order = orderCheck.rows[0];
             const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
@@ -540,7 +575,6 @@ app.post('/admin/update-order-status/:id', async (req, res) => {
                 await sendOrderShippedEmail(customerEmail, order.customer_name, id);
             }
         }
-        
         res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
     } catch (err) {
         console.error(`Error updating status for order ${id}:`, err);
@@ -552,8 +586,7 @@ app.get('/view-orders', async (req, res) => {
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
-        let html = `<h1>All Orders</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><br><table border="1" style="width:100%; border-collapse: collapse;"><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead><tbody>`;
-        
+        let html = `<h1>All Orders</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/products?password=${encodeURIComponent(password)}">Manage Products</a><br><br><table border="1" style="width:100%; border-collapse: collapse;"><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead><tbody>`;
         rows.forEach(order => {
             let itemsHtml = 'N/A';
             if (order.cart_items) {
@@ -562,10 +595,8 @@ app.get('/view-orders', async (req, res) => {
                     itemsHtml = '<ul>' + Object.keys(items).map(key => `<li>${he.encode(key)} (x${items[key].quantity})</li>`).join('') + '</ul>';
                 } catch (e) { itemsHtml = '<span style="color:red;">Invalid data</span>'; }
             }
-
             const statuses = ['Processing', 'Shipped', 'Delivered', 'Cancelled'];
             const statusOptions = statuses.map(s => `<option value="${s}" ${order.status === s ? 'selected' : ''}>${s}</option>`).join('');
-
             html += `
                 <tr>
                     <td>${order.id}</td>
@@ -668,13 +699,11 @@ app.get('/admin/coupons', async (req, res) => {
         res.status(500).send('Error loading coupon management page.');
     }
 });
-
 app.post('/admin/add-coupon', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { code, discount_type, discount_value } = req.body;
     try {
-        // We store the code in uppercase to make it case-insensitive
         await pool.query(
             'INSERT INTO coupons(code, discount_type, discount_value) VALUES($1, $2, $3)',
             [code.toUpperCase(), discount_type, discount_value]
@@ -685,7 +714,6 @@ app.post('/admin/add-coupon', async (req, res) => {
         res.status(500).send('Error adding coupon. Is the code already in use?');
     }
 });
-
 app.post('/admin/delete-coupon/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -696,8 +724,6 @@ app.post('/admin/delete-coupon/:id', async (req, res) => {
         res.status(500).send('Error deleting coupon.');
     }
 });
-
-
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).send('Something broke!');
