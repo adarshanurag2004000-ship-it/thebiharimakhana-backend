@@ -58,7 +58,9 @@ async function setupDatabase() {
                 address TEXT NOT NULL, cart_items JSONB, order_amount NUMERIC(10, 2) NOT NULL,
                 razorpay_payment_id VARCHAR(255) NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 user_uid VARCHAR(255),
-                status VARCHAR(50) NOT NULL DEFAULT 'Processing'
+                status VARCHAR(50) NOT NULL DEFAULT 'Processing',
+                coupon_used VARCHAR(255),
+                discount_amount NUMERIC(10, 2) DEFAULT 0
             );
         `);
         console.log('INFO: "orders" table is ready.');
@@ -86,14 +88,6 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "coupons" table is ready.');
-        
-        // Safely add new columns to orders table for coupon tracking
-        try {
-            await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_used VARCHAR(255), ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10, 2) DEFAULT 0`);
-            console.log('SUCCESS: "orders" table updated for coupons.');
-        } catch (err) {
-            console.error('Error altering orders table for coupons:', err);
-        }
 
     } catch (err) {
         console.error('Error setting up database tables:', err);
@@ -102,7 +96,6 @@ async function setupDatabase() {
     }
 }
 
-// ... All other functions are unchanged ...
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -116,6 +109,8 @@ async function verifyToken(req, res, next) {
         res.status(403).send('Unauthorized');
     }
 }
+
+// --- Email Functions ---
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total, discount = 0) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const itemsHtml = Object.keys(cart).map(name => {
@@ -144,6 +139,7 @@ async function sendOrderConfirmationEmail(customerEmail, customerName, order, ca
         console.error('Error sending confirmation email:', error);
     }
 }
+
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -158,6 +154,7 @@ async function sendOrderCancellationEmail(customerEmail, customerName, orderId) 
         console.error('Error sending cancellation email:', error);
     }
 }
+
 async function sendDeletionCodeEmail(customerEmail, code) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -175,6 +172,7 @@ async function sendDeletionCodeEmail(customerEmail, code) {
         console.error('Error sending deletion code email:', error);
     }
 }
+
 async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -191,6 +189,9 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
         console.error('Error sending shipped notification email:', error);
     }
 }
+
+
+// --- API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
@@ -199,6 +200,7 @@ app.get('/', async (req, res) => {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
 });
+
 app.post('/api/check-phone', async (req, res) => {
     const { phone } = req.body;
     if (!phone) {
@@ -216,6 +218,7 @@ app.post('/api/check-phone', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
+
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort } = req.query;
@@ -240,48 +243,47 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
-// MODIFIED TO HANDLE COUPONS
-app.post('/api/calculate-total', async (req, res) => {
+app.post('/api/apply-coupon', async (req, res) => {
     const { cart, couponCode } = req.body;
-    if (!cart || Object.keys(cart).length === 0) {
-      return res.status(400).json({ error: 'Cart data is missing or empty.' });
+    if (!cart || Object.keys(cart).length === 0 || !couponCode) {
+      return res.status(400).json({ success: false, message: 'Cart and coupon code are required.' });
     }
 
     try {
         let subtotal = 0;
         for (const productName in cart) {
-            const item = cart[productName];
-            subtotal += item.price * item.quantity;
+            subtotal += cart[productName].price * cart[productName].quantity;
         }
 
         let shippingCost = subtotal >= 500 ? 0 : 99;
         let discount = 0;
         let appliedCoupon = null;
 
-        if (couponCode) {
-            const couponResult = await pool.query('SELECT * FROM coupons WHERE code = $1 AND is_active = TRUE', [couponCode.toUpperCase()]);
-            if (couponResult.rows.length > 0) {
-                const coupon = couponResult.rows[0];
-                appliedCoupon = coupon.code;
-                if (coupon.discount_type === 'percentage') {
-                    discount = subtotal * (coupon.discount_value / 100);
-                } else { // fixed amount
-                    discount = coupon.discount_value;
-                }
-                discount = Math.min(subtotal, discount); // Cannot discount more than the subtotal
+        const couponResult = await pool.query('SELECT * FROM coupons WHERE code = $1 AND is_active = TRUE', [couponCode.toUpperCase()]);
+        
+        if (couponResult.rows.length > 0) {
+            const coupon = couponResult.rows[0];
+            appliedCoupon = coupon.code;
+            if (coupon.discount_type === 'percentage') {
+                discount = subtotal * (parseFloat(coupon.discount_value) / 100);
+            } else {
+                discount = parseFloat(coupon.discount_value);
             }
+            discount = Math.min(subtotal, discount);
+        } else {
+            return res.status(404).json({ success: false, message: "Invalid or inactive coupon code."});
         }
 
         const total = subtotal - discount + shippingCost;
         res.json({ success: true, subtotal, shippingCost, discount, total, appliedCoupon });
 
     } catch (err) {
-        console.error("Error in calculate-total:", err);
-        res.status(500).json({ success: false, message: "Error calculating total."});
+        console.error("Error in apply-coupon:", err);
+        res.status(500).json({ success: false, message: "Error applying coupon."});
     }
 });
 
-// MODIFIED TO HANDLE COUPONS SECURELY
+
 app.post('/checkout', verifyToken, async (req, res) => {
     const { cart, addressDetails, paymentId, couponCode } = req.body;
     const user = req.user; 
@@ -289,7 +291,6 @@ app.post('/checkout', verifyToken, async (req, res) => {
         return res.status(400).json({ success: false, message: 'Missing required order information.' });
     }
     try {
-        // --- Securely recalculate all totals on the backend ---
         let subtotal = 0;
         for (const productName in cart) {
             subtotal += cart[productName].price * cart[productName].quantity;
@@ -305,16 +306,15 @@ app.post('/checkout', verifyToken, async (req, res) => {
                 const coupon = couponResult.rows[0];
                 appliedCouponCode = coupon.code;
                 if (coupon.discount_type === 'percentage') {
-                    discount = subtotal * (coupon.discount_value / 100);
+                    discount = subtotal * (parseFloat(coupon.discount_value) / 100);
                 } else {
-                    discount = coupon.discount_value;
+                    discount = parseFloat(coupon.discount_value);
                 }
                 discount = Math.min(subtotal, discount);
             }
         }
         
         const totalAmount = subtotal - discount + shippingCost;
-        // --- End of secure recalculation ---
 
         const query = `
             INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, user_uid, razorpay_payment_id, coupon_used, discount_amount)
@@ -337,6 +337,7 @@ app.post('/checkout', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'An internal server error occurred.' });
     }
 });
+
 app.post('/api/user-login', async (req, res) => {
     const { email, uid, phone } = req.body;
     if (!email || !uid) {
@@ -356,6 +357,7 @@ app.post('/api/user-login', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
+
 app.get('/api/my-orders', verifyToken, async (req, res) => {
     try {
         const userUid = req.user.uid;
@@ -369,6 +371,7 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
         res.status(500).send('Error fetching orders.');
     }
 });
+
 app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
     const { uid, email } = req.user;
     const code = crypto.randomInt(100000, 999999).toString();
@@ -385,6 +388,7 @@ app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Could not send deletion code.' });
     }
 });
+
 app.post('/api/verify-deletion', verifyToken, async (req, res) => {
     const { uid } = req.user;
     const { code } = req.body;
@@ -416,6 +420,8 @@ app.post('/api/verify-deletion', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'An error occurred during account deletion.' });
     }
 });
+
+// --- Admin Routes ---
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -555,32 +561,6 @@ app.post('/admin/hard-delete-user/:uid', async (req, res) => {
         res.status(500).send(`Error permanently deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
     }
 });
-app.post('/admin/update-order-status/:id', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    const { id } = req.params;
-    const { newStatus } = req.body;
-    try {
-        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
-        if (orderCheck.rows.length === 0) {
-            return res.status(404).send("Order not found.");
-        }
-        const oldStatus = orderCheck.rows[0].status;
-        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
-        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
-            const order = orderCheck.rows[0];
-            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
-            if (userResult.rows.length > 0) {
-                const customerEmail = userResult.rows[0].email;
-                await sendOrderShippedEmail(customerEmail, order.customer_name, id);
-            }
-        }
-        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
-    } catch (err) {
-        console.error(`Error updating status for order ${id}:`, err);
-        res.status(500).send('Error updating order status.');
-    }
-});
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -627,6 +607,32 @@ app.get('/view-orders', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
+app.post('/admin/update-order-status/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { id } = req.params;
+    const { newStatus } = req.body;
+    try {
+        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
+        if (orderCheck.rows.length === 0) {
+            return res.status(404).send("Order not found.");
+        }
+        const oldStatus = orderCheck.rows[0].status;
+        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
+        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
+            const order = orderCheck.rows[0];
+            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
+            if (userResult.rows.length > 0) {
+                const customerEmail = userResult.rows[0].email;
+                await sendOrderShippedEmail(customerEmail, order.customer_name, id);
+            }
+        }
+        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error(`Error updating status for order ${id}:`, err);
+        res.status(500).send('Error updating order status.');
+    }
+});
 app.post('/admin/delete-order/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -638,6 +644,7 @@ app.post('/admin/delete-order/:id', async (req, res) => {
         res.status(500).send('Error deleting order.');
     }
 });
+
 // --- NEW ADMIN ROUTES FOR COUPONS ---
 app.get('/admin/coupons', async (req, res) => {
     const { password } = req.query;
