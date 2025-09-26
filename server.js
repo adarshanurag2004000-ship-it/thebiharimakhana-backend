@@ -1,4 +1,4 @@
-// --- TEMPORARY server.js FILE TO CREATE coupons TABLE ---
+// --- FINAL server.js WITH COUPON ADMIN PANEL ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -75,12 +75,11 @@ async function setupDatabase() {
         `);
         console.log('INFO: "users" table is ready.');
 
-        // --- NEW TABLE FOR COUPONS ---
         await client.query(`
             CREATE TABLE IF NOT EXISTS coupons (
                 id SERIAL PRIMARY KEY,
                 code VARCHAR(255) UNIQUE NOT NULL,
-                discount_type VARCHAR(20) NOT NULL, -- 'percentage' or 'fixed'
+                discount_type VARCHAR(20) NOT NULL,
                 discount_value NUMERIC(10, 2) NOT NULL,
                 is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -95,7 +94,7 @@ async function setupDatabase() {
     }
 }
 
-// ... All other functions and routes are included below for completeness
+// ... All other functions are the same as before ...
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -184,7 +183,7 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
-        res.send('The Bihari Makhana Backend is running (temp - coupon update) and connected to the database.');
+        res.send('The Bihari Makhana Backend is running and connected to the database.');
     } catch (err) {
         res.status(500).send('Backend is running, but could not connect to the database.');
     }
@@ -518,12 +517,42 @@ app.post('/admin/hard-delete-user/:uid', async (req, res) => {
         res.status(500).send(`Error permanently deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
     }
 });
+app.post('/admin/update-order-status/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { id } = req.params;
+    const { newStatus } = req.body;
+
+    try {
+        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
+        if (orderCheck.rows.length === 0) {
+            return res.status(404).send("Order not found.");
+        }
+        const oldStatus = orderCheck.rows[0].status;
+
+        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
+        
+        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
+            const order = orderCheck.rows[0];
+            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
+            if (userResult.rows.length > 0) {
+                const customerEmail = userResult.rows[0].email;
+                await sendOrderShippedEmail(customerEmail, order.customer_name, id);
+            }
+        }
+        
+        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error(`Error updating status for order ${id}:`, err);
+        res.status(500).send('Error updating order status.');
+    }
+});
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
-        let html = `<h1>All Orders</h1><table border="1" style="width:100%; border-collapse: collapse;"><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead><tbody>`;
+        let html = `<h1>All Orders</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><br><table border="1" style="width:100%; border-collapse: collapse;"><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead><tbody>`;
         
         rows.forEach(order => {
             let itemsHtml = 'N/A';
@@ -546,7 +575,7 @@ app.get('/view-orders', async (req, res) => {
                     <td>
                         <form action="/admin/update-order-status/${order.id}?password=${encodeURIComponent(password)}" method="POST">
                             <select name="newStatus">${statusOptions}</select>
-                            <button type="submit">Update</button>
+                            <button type="submit" style="margin-top:5px;">Update</button>
                         </form>
                     </td>
                     <td>${he.encode(order.razorpay_payment_id)}</td>
@@ -567,36 +596,6 @@ app.get('/view-orders', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
-app.post('/admin/update-order-status/:id', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    const { id } = req.params;
-    const { newStatus } = req.body;
-
-    try {
-        const orderCheck = await pool.query('SELECT status FROM orders WHERE id = $1', [id]);
-        const oldStatus = orderCheck.rows[0]?.status;
-
-        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
-        
-        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
-            const orderResult = await pool.query('SELECT user_uid, customer_name FROM orders WHERE id = $1', [id]);
-            if (orderResult.rows.length > 0) {
-                const order = orderResult.rows[0];
-                const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
-                if (userResult.rows.length > 0) {
-                    const customerEmail = userResult.rows[0].email;
-                    await sendOrderShippedEmail(customerEmail, order.customer_name, id);
-                }
-            }
-        }
-        
-        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
-    } catch (err) {
-        console.error(`Error updating status for order ${id}:`, err);
-        res.status(500).send('Error updating order status.');
-    }
-});
 app.post('/admin/delete-order/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -608,6 +607,97 @@ app.post('/admin/delete-order/:id', async (req, res) => {
         res.status(500).send('Error deleting order.');
     }
 });
+// --- NEW ADMIN ROUTES FOR COUPONS ---
+app.get('/admin/coupons', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        const { rows } = await pool.query('SELECT * FROM coupons ORDER BY created_at DESC');
+        const couponsHtml = rows.map(c => `<tr>
+            <td>${c.id}</td>
+            <td>${he.encode(c.code)}</td>
+            <td>${c.discount_type}</td>
+            <td>${c.discount_value}</td>
+            <td>${c.is_active ? 'Yes' : 'No'}</td>
+            <td>
+                <form action="/admin/delete-coupon/${c.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
+                    <button type="submit" onclick="return confirm('Are you sure?');">Delete</button>
+                </form>
+            </td>
+        </tr>`).join('');
+        
+        res.send(`
+            <!DOCTYPE html><html><head><title>Manage Coupons</title>
+            <style>
+                body{font-family:sans-serif;margin:2em}
+                table{border-collapse:collapse;width:100%; margin-bottom: 2em;}
+                th,td{border:1px solid #ddd;padding:8px}
+                .add-form{padding:1.5em;border:1px solid #ddd; background-color:#f9f9f9;}
+                .form-group{margin-bottom:1em;}
+                label{display:block;margin-bottom:0.5em;}
+                input, select{padding:8px;width:250px;}
+            </style>
+            </head><body>
+            <h1>Manage Coupons</h1>
+            <a href="/view-orders?password=${encodeURIComponent(password)}">Back to Orders</a>
+            <table><thead><tr><th>ID</th><th>Code</th><th>Type</th><th>Value</th><th>Active?</th><th>Actions</th></tr></thead>
+            <tbody>${couponsHtml}</tbody></table>
+            <div class="add-form">
+                <h2>Add New Coupon</h2>
+                <form action="/admin/add-coupon?password=${encodeURIComponent(password)}" method="POST">
+                    <div class="form-group">
+                        <label>Coupon Code (e.g., MAKHANA10): <input name="code" required></label>
+                    </div>
+                    <div class="form-group">
+                        <label>Discount Type: 
+                            <select name="discount_type">
+                                <option value="percentage">Percentage</option>
+                                <option value="fixed">Fixed Amount</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>Discount Value (e.g., 10 for 10% or 100 for ₹100): <input name="discount_value" type="number" step="0.01" required></label>
+                    </div>
+                    <button type="submit">Add Coupon</button>
+                </form>
+            </div>
+            </body></html>
+        `);
+    } catch (err) {
+        res.status(500).send('Error loading coupon management page.');
+    }
+});
+
+app.post('/admin/add-coupon', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { code, discount_type, discount_value } = req.body;
+    try {
+        // We store the code in uppercase to make it case-insensitive
+        await pool.query(
+            'INSERT INTO coupons(code, discount_type, discount_value) VALUES($1, $2, $3)',
+            [code.toUpperCase(), discount_type, discount_value]
+        );
+        res.redirect(`/admin/coupons?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error("Error adding coupon:", err);
+        res.status(500).send('Error adding coupon. Is the code already in use?');
+    }
+});
+
+app.post('/admin/delete-coupon/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        await pool.query('DELETE FROM coupons WHERE id = $1', [req.params.id]);
+        res.redirect(`/admin/coupons?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error deleting coupon.');
+    }
+});
+
+
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).send('Something broke!');
