@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH CORRECTED REVIEW CHECK ---
+// --- FINAL server.js WITH SAVED ADDRESSES FEATURE ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -30,7 +30,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: 150, // Increased slightly for more API calls
 });
 app.use(limiter);
 
@@ -104,13 +104,31 @@ async function setupDatabase() {
         `);
         console.log('INFO: "reviews" table is ready.');
 
+        // --- NEW ADDRESSES TABLE ---
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS addresses (
+                id SERIAL PRIMARY KEY,
+                user_uid VARCHAR(255) NOT NULL,
+                full_name VARCHAR(255) NOT NULL,
+                phone_number VARCHAR(20) NOT NULL,
+                street VARCHAR(255) NOT NULL,
+                locality VARCHAR(255) NOT NULL,
+                city VARCHAR(100) NOT NULL,
+                pincode VARCHAR(10) NOT NULL,
+                state VARCHAR(100) NOT NULL,
+                country VARCHAR(100) NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log('INFO: "addresses" table is ready.');
+
     } catch (err) {
         console.error('Error setting up database tables:', err);
     } finally {
         client.release();
     }
 }
-
+// ... The rest of the file is included below ...
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -407,15 +425,11 @@ app.post('/api/verify-deletion', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'An error occurred during account deletion.' });
     }
 });
-
-// --- REVIEW API ENDPOINTS ---
 app.get('/api/products/:productName/reviews', async (req, res) => {
     try {
         const { productName } = req.params;
-        // Normalize the name to handle both 'classic-salted' and 'classic salted'
         const nameWithHyphen = productName.replace(/ /g, '-');
         const nameWithSpace = productName.replace(/-/g, ' ');
-
         const { rows } = await pool.query(
             'SELECT rating, review_text, reviewer_name, created_at FROM reviews WHERE (product_name = $1 OR product_name = $2) AND is_approved = TRUE ORDER BY created_at DESC',
             [nameWithHyphen, nameWithSpace]
@@ -426,35 +440,27 @@ app.get('/api/products/:productName/reviews', async (req, res) => {
         res.status(500).send('Error fetching reviews.');
     }
 });
-
 app.post('/api/submit-review', verifyToken, async (req, res) => {
-    const { uid, name } = req.user;
+    const { uid } = req.user;
     const { productName, rating, reviewText } = req.body;
-
     if (!productName || !rating) {
         return res.status(400).json({ success: false, message: 'Product and rating are required.' });
     }
-
     try {
-        const userResult = await pool.query('SELECT is_blocked_from_reviewing FROM users WHERE firebase_uid = $1', [uid]);
+        const userResult = await pool.query('SELECT is_blocked_from_reviewing, name FROM users WHERE firebase_uid = $1', [uid]);
         if (userResult.rows.length > 0 && userResult.rows[0].is_blocked_from_reviewing) {
             return res.status(403).json({ success: false, message: 'You are not permitted to leave reviews.' });
         }
-
-        // ** THIS IS THE CORRECTED LOGIC **
-        // Create both versions of the product name to check against the JSON in the database
+        const reviewerName = userResult.rows[0]?.name || req.user.name;
         const productNameWithHyphens = productName.replace(/ /g, '-');
         const productNameWithSpaces = productName.replace(/-/g, ' ');
-
         const ordersResult = await pool.query(
             `SELECT id FROM orders WHERE user_uid = $1 AND (cart_items ->> $2 IS NOT NULL OR cart_items ->> $3 IS NOT NULL) AND status = 'Delivered'`,
             [uid, productNameWithHyphens, productNameWithSpaces]
         );
-
         if (ordersResult.rows.length === 0) {
             return res.status(403).json({ success: false, message: 'You can only review products you have purchased and received.' });
         }
-
         const existingReview = await pool.query(
             'SELECT id FROM reviews WHERE user_uid = $1 AND (product_name = $2 OR product_name = $3)',
             [uid, productNameWithHyphens, productNameWithSpaces]
@@ -462,17 +468,61 @@ app.post('/api/submit-review', verifyToken, async (req, res) => {
         if (existingReview.rows.length > 0) {
             return res.status(409).json({ success: false, message: 'You have already reviewed this product.' });
         }
-        
-        // We save the review with the hyphenated version for consistency
         await pool.query(
             'INSERT INTO reviews (product_name, user_uid, rating, review_text, reviewer_name) VALUES ($1, $2, $3, $4, $5)',
-            [productNameWithHyphens, uid, rating, reviewText, name]
+            [productNameWithHyphens, uid, rating, reviewText, reviewerName]
         );
-        
         res.status(201).json({ success: true, message: 'Thank you! Your review has been submitted.' });
     } catch (err) {
         console.error("Error submitting review:", err);
         res.status(500).json({ success: false, message: 'An error occurred while submitting your review.' });
+    }
+});
+
+// --- NEW ADDRESS API ENDPOINTS ---
+app.get('/api/my-addresses', verifyToken, async (req, res) => {
+    try {
+        const { uid } = req.user;
+        const { rows } = await pool.query('SELECT * FROM addresses WHERE user_uid = $1 ORDER BY created_at DESC', [uid]);
+        res.json(rows);
+    } catch (err) {
+        console.error("Error fetching addresses:", err);
+        res.status(500).json({ success: false, message: 'Could not fetch addresses.' });
+    }
+});
+
+app.post('/api/my-addresses', verifyToken, async (req, res) => {
+    const { uid } = req.user;
+    const { fullName, phoneNumber, street, locality, city, pincode, state, country } = req.body;
+    // Simple validation
+    if (!fullName || !phoneNumber || !street || !city || !pincode || !state || !country) {
+        return res.status(400).json({ success: false, message: "All fields are required." });
+    }
+    try {
+        const { rows } = await pool.query(
+            `INSERT INTO addresses (user_uid, full_name, phone_number, street, locality, city, pincode, state, country)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+            [uid, fullName, phoneNumber, street, locality, city, pincode, state, country]
+        );
+        res.status(201).json({ success: true, message: "Address saved!", address: rows[0] });
+    } catch (err) {
+        console.error("Error saving address:", err);
+        res.status(500).json({ success: false, message: 'Could not save address.' });
+    }
+});
+
+app.delete('/api/my-addresses/:id', verifyToken, async (req, res) => {
+    const { uid } = req.user;
+    const { id } = req.params;
+    try {
+        const result = await pool.query('DELETE FROM addresses WHERE id = $1 AND user_uid = $2', [id, uid]);
+        if (result.rowCount === 0) {
+            return res.status(404).json({ success: false, message: "Address not found or you don't have permission to delete it." });
+        }
+        res.status(200).json({ success: true, message: "Address deleted." });
+    } catch (err) {
+        console.error("Error deleting address:", err);
+        res.status(500).json({ success: false, message: 'Could not delete address.' });
     }
 });
 
@@ -484,7 +534,7 @@ app.get('/admin/products', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM products ORDER BY id ASC');
         const productsHtml = rows.map(p => `<tr><td>${p.id}</td><td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td><td>${he.encode(p.name)}</td><td>${p.price}</td><td>${p.sale_price || 'N/A'}</td><td>${p.stock_quantity}</td><td><a href="/admin/edit-product/${p.id}?password=${encodeURIComponent(password)}">Edit</a><form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;"><button type="submit" onclick="return confirm('Are you sure?');">Delete</button></form></td></tr>`).join('');
-        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/reviews?password=${encodeURIComponent(password)}">Manage Reviews</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
+        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/view-orders?password=${encodeURIComponent(password)}">View Orders</a><br><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/reviews?password=${encodeURIComponent(password)}">Manage Reviews</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
     } catch (err) {
         res.status(500).send('Error loading product management page.');
     }
@@ -630,32 +680,6 @@ app.post('/admin/hard-delete-user/:uid', async (req, res) => {
         res.status(500).send(`Error permanently deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
     }
 });
-app.post('/admin/update-order-status/:id', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    const { id } = req.params;
-    const { newStatus } = req.body;
-    try {
-        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
-        if (orderCheck.rows.length === 0) {
-            return res.status(404).send("Order not found.");
-        }
-        const oldStatus = orderCheck.rows[0].status;
-        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
-        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
-            const order = orderCheck.rows[0];
-            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
-            if (userResult.rows.length > 0) {
-                const customerEmail = userResult.rows[0].email;
-                await sendOrderShippedEmail(customerEmail, order.customer_name, id);
-            }
-        }
-        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
-    } catch (err) {
-        console.error(`Error updating status for order ${id}:`, err);
-        res.status(500).send('Error updating order status.');
-    }
-});
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -700,6 +724,32 @@ app.get('/view-orders', async (req, res) => {
     } catch (err) {
         console.error("Error loading orders page:", err);
         res.status(500).send('Internal Server Error');
+    }
+});
+app.post('/admin/update-order-status/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { id } = req.params;
+    const { newStatus } = req.body;
+    try {
+        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
+        if (orderCheck.rows.length === 0) {
+            return res.status(404).send("Order not found.");
+        }
+        const oldStatus = orderCheck.rows[0].status;
+        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
+        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
+            const order = orderCheck.rows[0];
+            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
+            if (userResult.rows.length > 0) {
+                const customerEmail = userResult.rows[0].email;
+                await sendOrderShippedEmail(customerEmail, order.customer_name, id);
+            }
+        }
+        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error(`Error updating status for order ${id}:`, err);
+        res.status(500).send('Error updating order status.');
     }
 });
 app.post('/admin/delete-order/:id', async (req, res) => {
@@ -798,6 +848,26 @@ app.post('/admin/delete-coupon/:id', async (req, res) => {
         res.status(500).send('Error deleting coupon.');
     }
 });
+app.post('/admin/block-user/:uid', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        await pool.query('UPDATE users SET is_blocked_from_reviewing = TRUE WHERE firebase_uid = $1', [req.params.uid]);
+        res.redirect(`/admin/reviews?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error blocking user.');
+    }
+});
+app.post('/admin/unblock-user/:uid', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        await pool.query('UPDATE users SET is_blocked_from_reviewing = FALSE WHERE firebase_uid = $1', [req.params.uid]);
+        res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error unblocking user.');
+    }
+});
 app.get('/admin/reviews', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -842,26 +912,6 @@ app.post('/admin/delete-review/:id', async (req, res) => {
         res.redirect(`/admin/reviews?password=${encodeURIComponent(password)}`);
     } catch (err) {
         res.status(500).send('Error deleting review.');
-    }
-});
-app.post('/admin/block-user/:uid', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    try {
-        await pool.query('UPDATE users SET is_blocked_from_reviewing = TRUE WHERE firebase_uid = $1', [req.params.uid]);
-        res.redirect(`/admin/reviews?password=${encodeURIComponent(password)}`);
-    } catch (err) {
-        res.status(500).send('Error blocking user.');
-    }
-});
-app.post('/admin/unblock-user/:uid', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    try {
-        await pool.query('UPDATE users SET is_blocked_from_reviewing = FALSE WHERE firebase_uid = $1', [req.params.uid]);
-        res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
-    } catch (err) {
-        res.status(500).send('Error unblocking user.');
     }
 });
 app.use((err, req, res, next) => {
