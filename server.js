@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH SAVED ADDRESSES FEATURE ---
+// --- FINAL server.js WITH DYNAMIC BANNER SUPPORT ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -30,7 +30,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 150, // Increased slightly for more API calls
+    max: 150,
 });
 app.use(limiter);
 
@@ -104,7 +104,6 @@ async function setupDatabase() {
         `);
         console.log('INFO: "reviews" table is ready.');
 
-        // --- NEW ADDRESSES TABLE ---
         await client.query(`
             CREATE TABLE IF NOT EXISTS addresses (
                 id SERIAL PRIMARY KEY,
@@ -128,7 +127,6 @@ async function setupDatabase() {
         client.release();
     }
 }
-// ... The rest of the file is included below ...
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -441,17 +439,17 @@ app.get('/api/products/:productName/reviews', async (req, res) => {
     }
 });
 app.post('/api/submit-review', verifyToken, async (req, res) => {
-    const { uid } = req.user;
+    const { uid, name } = req.user;
     const { productName, rating, reviewText } = req.body;
     if (!productName || !rating) {
         return res.status(400).json({ success: false, message: 'Product and rating are required.' });
     }
     try {
-        const userResult = await pool.query('SELECT is_blocked_from_reviewing, name FROM users WHERE firebase_uid = $1', [uid]);
+        const userResult = await pool.query('SELECT is_blocked_from_reviewing FROM users WHERE firebase_uid = $1', [uid]);
         if (userResult.rows.length > 0 && userResult.rows[0].is_blocked_from_reviewing) {
             return res.status(403).json({ success: false, message: 'You are not permitted to leave reviews.' });
         }
-        const reviewerName = userResult.rows[0]?.name || req.user.name;
+        const reviewerName = name;
         const productNameWithHyphens = productName.replace(/ /g, '-');
         const productNameWithSpaces = productName.replace(/-/g, ' ');
         const ordersResult = await pool.query(
@@ -478,8 +476,6 @@ app.post('/api/submit-review', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'An error occurred while submitting your review.' });
     }
 });
-
-// --- NEW ADDRESS API ENDPOINTS ---
 app.get('/api/my-addresses', verifyToken, async (req, res) => {
     try {
         const { uid } = req.user;
@@ -490,11 +486,9 @@ app.get('/api/my-addresses', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Could not fetch addresses.' });
     }
 });
-
 app.post('/api/my-addresses', verifyToken, async (req, res) => {
     const { uid } = req.user;
     const { fullName, phoneNumber, street, locality, city, pincode, state, country } = req.body;
-    // Simple validation
     if (!fullName || !phoneNumber || !street || !city || !pincode || !state || !country) {
         return res.status(400).json({ success: false, message: "All fields are required." });
     }
@@ -510,7 +504,6 @@ app.post('/api/my-addresses', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Could not save address.' });
     }
 });
-
 app.delete('/api/my-addresses/:id', verifyToken, async (req, res) => {
     const { uid } = req.user;
     const { id } = req.params;
@@ -525,7 +518,16 @@ app.delete('/api/my-addresses/:id', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Could not delete address.' });
     }
 });
-
+// --- NEW ROUTE TO GET ACTIVE COUPONS FOR BANNER ---
+app.get('/api/active-coupons', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT code, discount_type, discount_value FROM coupons WHERE is_active = TRUE');
+        res.json(rows);
+    } catch (err) {
+        console.error("Error fetching active coupons:", err);
+        res.status(500).json([]); // Return empty array on error
+    }
+});
 
 // --- Admin Routes ---
 app.get('/admin/products', async (req, res) => {
