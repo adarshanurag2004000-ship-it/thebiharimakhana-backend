@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH DYNAMIC BANNER SUPPORT ---
+// --- FINAL server.js WITH DYNAMIC BANNER & FEATURED PRODUCTS SUPPORT ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -44,11 +44,13 @@ const pool = new Pool({
 async function setupDatabase() {
     const client = await pool.connect();
     try {
+        // --- MODIFIED: ADDED is_featured COLUMN ---
         await client.query(`
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, price NUMERIC(10, 2) NOT NULL, description TEXT,
                 image_url VARCHAR(2048), created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                sale_price NUMERIC(10, 2), stock_quantity INTEGER NOT NULL DEFAULT 10
+                sale_price NUMERIC(10, 2), stock_quantity INTEGER NOT NULL DEFAULT 10,
+                is_featured BOOLEAN DEFAULT FALSE
             );
         `);
         console.log('INFO: "products" table is ready.');
@@ -263,6 +265,20 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
+
+// --- NEW ENDPOINT FOR FEATURED PRODUCTS ---
+app.get('/api/featured-products', async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            'SELECT * FROM products WHERE is_featured = TRUE AND stock_quantity > 0 ORDER BY created_at DESC'
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error('Error fetching featured products:', err);
+        res.status(500).send('Error fetching featured products');
+    }
+});
+
 app.post('/api/apply-coupon', async (req, res) => {
     const { cart, couponCode } = req.body;
     if (!cart || Object.keys(cart).length === 0) {
@@ -518,14 +534,13 @@ app.delete('/api/my-addresses/:id', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Could not delete address.' });
     }
 });
-// --- NEW ROUTE TO GET ACTIVE COUPONS FOR BANNER ---
 app.get('/api/active-coupons', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT code, discount_type, discount_value FROM coupons WHERE is_active = TRUE');
         res.json(rows);
     } catch (err) {
         console.error("Error fetching active coupons:", err);
-        res.status(500).json([]); // Return empty array on error
+        res.status(500).json([]);
     }
 });
 
@@ -534,13 +549,51 @@ app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
+        // --- MODIFIED: Fetch is_featured status ---
         const { rows } = await pool.query('SELECT * FROM products ORDER BY id ASC');
-        const productsHtml = rows.map(p => `<tr><td>${p.id}</td><td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td><td>${he.encode(p.name)}</td><td>${p.price}</td><td>${p.sale_price || 'N/A'}</td><td>${p.stock_quantity}</td><td><a href="/admin/edit-product/${p.id}?password=${encodeURIComponent(password)}">Edit</a><form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;"><button type="submit" onclick="return confirm('Are you sure?');">Delete</button></form></td></tr>`).join('');
-        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/view-orders?password=${encodeURIComponent(password)}">View Orders</a><br><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/reviews?password=${encodeURIComponent(password)}">Manage Reviews</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
+        const productsHtml = rows.map(p => {
+            const featuredStatus = p.is_featured ? '<strong>Yes</strong>' : 'No';
+            const toggleButtonText = p.is_featured ? 'Remove Featured' : 'Make Featured';
+            return `<tr>
+                <td>${p.id}</td>
+                <td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td>
+                <td>${he.encode(p.name)}</td>
+                <td>${p.price}</td>
+                <td>${p.sale_price || 'N/A'}</td>
+                <td>${p.stock_quantity}</td>
+                <td>${featuredStatus}</td>
+                <td>
+                    <a href="/admin/edit-product/${p.id}?password=${encodeURIComponent(password)}">Edit</a>
+                    <form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline; margin-left: 5px;">
+                        <button type="submit" onclick="return confirm('Are you sure?');">Delete</button>
+                    </form>
+                    <form action="/admin/toggle-featured/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline; margin-left: 5px;">
+                        <button type="submit">${toggleButtonText}</button>
+                    </form>
+                </td>
+            </tr>`;
+        }).join('');
+
+        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/view-orders?password=${encodeURIComponent(password)}">View Orders</a><br><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/reviews?password=${encodeURIComponent(password)}">Manage Reviews</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Featured?</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><p><label><input type="checkbox" name="is_featured" value="true"> Mark as Featured</label></p><button type="submit">Add Product</button></form></div></body></html>`);
     } catch (err) {
         res.status(500).send('Error loading product management page.');
     }
 });
+
+// --- NEW ROUTE TO TOGGLE FEATURED STATUS ---
+app.post('/admin/toggle-featured/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        const { id } = req.params;
+        await pool.query('UPDATE products SET is_featured = NOT is_featured WHERE id = $1', [id]);
+        res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error('Error toggling featured status:', err);
+        res.status(500).send('Error updating product.');
+    }
+});
+
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -550,14 +603,18 @@ app.post('/add-product', async (req, res) => {
         salePrice: Joi.number().allow(null, ''),
         stockQuantity: Joi.number().integer().required(),
         description: Joi.string().required(),
-        imageUrl: Joi.string().uri().required()
+        imageUrl: Joi.string().uri().required(),
+        is_featured: Joi.boolean() // MODIFIED: Added validation for is_featured
     });
-    const { error, value } = productSchema.validate(req.body);
+    // MODIFIED: Handle checkbox value
+    const isFeatured = req.body.is_featured === 'true'; 
+    const { error, value } = productSchema.validate({ ...req.body, is_featured: isFeatured });
+
     if (error) { return res.status(400).send(error.details[0].message); }
     try {
         await pool.query(
-            'INSERT INTO products(name, price, sale_price, stock_quantity, description, image_url) VALUES($1, $2, $3, $4, $5, $6)',
-            [value.productName, value.price, value.salePrice || null, value.stockQuantity, value.description, value.imageUrl]
+            'INSERT INTO products(name, price, sale_price, stock_quantity, description, image_url, is_featured) VALUES($1, $2, $3, $4, $5, $6, $7)',
+            [value.productName, value.price, value.salePrice || null, value.stockQuantity, value.description, value.imageUrl, value.is_featured]
         );
         res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
     } catch (err) {
@@ -572,7 +629,8 @@ app.get('/admin/edit-product/:id', async (req, res) => {
         const { rows } = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
         if (rows.length === 0) { return res.status(404).send('Product not found.'); }
         const p = rows[0];
-        res.send(`<!DOCTYPE html><html><head><title>Edit Product</title><style>body{font-family:sans-serif;margin:2em}label,input,textarea{display:block;width:300px;margin-bottom:1em}</style></head><body><h1>Edit: ${he.encode(p.name)}</h1><form action="/admin/update-product/${p.id}?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" value="${he.encode(p.name)}" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" value="${p.price}" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01" value="${p.sale_price || ''}"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="${p.stock_quantity}" required></label></p><p><label>Description: <textarea name="description" required>${he.encode(p.description)}</textarea></label></p><p><label>Image URL: <input name="imageUrl" value="${p.image_url}" required></label></p><button type="submit">Update</button></form></body></html>`);
+        const isChecked = p.is_featured ? 'checked' : ''; // MODIFIED: Check if product is featured
+        res.send(`<!DOCTYPE html><html><head><title>Edit Product</title><style>body{font-family:sans-serif;margin:2em}label,input,textarea{display:block;width:300px;margin-bottom:1em}</style></head><body><h1>Edit: ${he.encode(p.name)}</h1><form action="/admin/update-product/${p.id}?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" value="${he.encode(p.name)}" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" value="${p.price}" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01" value="${p.sale_price || ''}"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="${p.stock_quantity}" required></label></p><p><label>Description: <textarea name="description" required>${he.encode(p.description)}</textarea></label></p><p><label>Image URL: <input name="imageUrl" value="${p.image_url}" required></label></p><p><label><input type="checkbox" name="is_featured" value="true" ${isChecked}> Mark as Featured</label></p><button type="submit">Update</button></form></body></html>`);
     } catch (err) {
         res.status(500).send('Error loading edit page.');
     }
@@ -587,14 +645,17 @@ app.post('/admin/update-product/:id', async (req, res) => {
         salePrice: Joi.number().allow(null, ''),
         stockQuantity: Joi.number().integer().required(),
         description: Joi.string().required(),
-        imageUrl: Joi.string().uri().required()
+        imageUrl: Joi.string().uri().required(),
+        is_featured: Joi.boolean()
     });
-    const { error, value } = productSchema.validate(req.body);
+    const isFeatured = req.body.is_featured === 'true';
+    const { error, value } = productSchema.validate({ ...req.body, is_featured: isFeatured });
+
     if (error) { return res.status(400).send(error.details[0].message); }
     try {
         await pool.query(
-            'UPDATE products SET name = $1, price = $2, description = $3, image_url = $4, sale_price = $5, stock_quantity = $6 WHERE id = $7',
-            [value.productName, value.price, value.description, value.imageUrl, value.salePrice || null, value.stockQuantity, id]
+            'UPDATE products SET name = $1, price = $2, description = $3, image_url = $4, sale_price = $5, stock_quantity = $6, is_featured = $7 WHERE id = $8',
+            [value.productName, value.price, value.description, value.imageUrl, value.salePrice || null, value.stockQuantity, value.is_featured, id]
         );
         res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
     } catch (err) {
