@@ -1,4 +1,4 @@
-// --- SERVER.JS WITH AUTOMATIC DATABASE FIX ---
+// --- SERVER.JS WITH ADMIN DELETE FUNCTIONS (COMPLETE CODE) ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -63,7 +63,6 @@ async function setupDatabase() {
         `);
         console.log('INFO: "products" table schema is up to date.');
         
-        // --- START: AUTOMATIC FIX FOR MISSING 'category' COLUMN ---
         console.log('INFO: Checking if "category" column exists in "products" table...');
         const checkColumnResult = await client.query(`
             SELECT 1 FROM information_schema.columns
@@ -77,7 +76,6 @@ async function setupDatabase() {
         } else {
             console.log('INFO: "category" column already exists. No action needed.');
         }
-        // --- END: AUTOMATIC FIX ---
 
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
@@ -236,7 +234,7 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     }
 }
 
-// --- Public API Routes (unchanged) ---
+// --- Public API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
@@ -262,7 +260,6 @@ app.post('/api/check-phone', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
-
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort, category } = req.query;
@@ -295,7 +292,6 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
-
 app.get('/api/featured-products', async (req, res) => {
     try {
         const { rows } = await pool.query(
@@ -598,6 +594,9 @@ const getAdminHeaderHTML = (currentPageTitle) => {
             .add-form { margin-top: 2em; padding: 1.5em; border: 1px solid #ddd; background-color: white; }
             .logout-btn { background-color: #f44336; color: white; padding: 0.5em 1em; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; }
             .form-group{margin-bottom:1em;} label{display:block;margin-bottom:0.5em;} input, select, textarea, button{padding:8px; width: 100%; box-sizing: border-box;}
+            button, .button-style { padding: 8px; border: none; cursor: pointer; border-radius: 4px; }
+            .soft-delete-btn { background-color: #f0ad4e; color: white; }
+            .permanent-delete-btn { background-color: #d9534f; color: white; }
         </style>
         </head><body>
         <nav class="admin-nav">
@@ -781,21 +780,83 @@ app.post('/admin/delete-product/:id', checkAdminAuth, async (req, res) => {
     } catch (err) { res.status(500).send('Error deleting product.'); }
 });
 
+// START: MODIFIED USERS ROUTE
 app.get('/admin/users', checkAdminAuth, async (req, res) => {
     try {
-        const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at, is_blocked_from_reviewing FROM users ORDER BY created_at DESC');
+        const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at FROM users ORDER BY created_at DESC');
         const usersHtml = rows.map(user => {
-            const status = user.deleted_at ? `<span style="color:red;">Deleted</span>` : '<span style="color:green;">Active</span>';
-            return `<tr><td>${he.encode(user.email)}</td><td>${he.encode(user.phone || 'N/A')}</td><td>${status}</td></tr>`;
+            const status = user.deleted_at ? `<span style="color:red;">Deleted on ${new Date(user.deleted_at).toLocaleDateString()}</span>` : '<span style="color:green;">Active</span>';
+            
+            let actionsHtml = '';
+            if (!user.deleted_at) {
+                actionsHtml += `<form action="/admin/soft-delete-user/${user.firebase_uid}" method="POST" style="display:inline-block; margin-right: 5px;">
+                                    <button type="submit" class="soft-delete-btn" onclick="return confirm('Are you sure you want to soft delete this user? They will be marked as inactive.');">Soft Delete</button>
+                                </form>`;
+            }
+            actionsHtml += `<form action="/admin/permanent-delete-user/${user.firebase_uid}" method="POST" style="display:inline-block;">
+                                <button type="submit" class="permanent-delete-btn" onclick="return confirm('WARNING: This will permanently delete the user from Firebase and your database. This action is irreversible. Are you sure?');">Permanent Delete</button>
+                            </form>`;
+
+            return `<tr>
+                        <td>${he.encode(user.email)}</td>
+                        <td>${he.encode(user.phone || 'N/A')}</td>
+                        <td>${status}</td>
+                        <td>${actionsHtml}</td>
+                    </tr>`;
         }).join('');
         const header = getAdminHeaderHTML('Manage Users');
-        res.send(`${header}<h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Status</th></tr></thead><tbody>${usersHtml}</tbody></table></div></body></html>`);
+        res.send(`${header}<h1>Registered Users</h1>
+                    <table>
+                        <thead><tr><th>Email</th><th>Phone</th><th>Status</th><th>Actions</th></tr></thead>
+                        <tbody>${usersHtml}</tbody>
+                    </table>
+                  </div></body></html>`);
     } catch (err) {
         console.error("Error loading users page:", err);
         res.status(500).send('Error loading users page.');
     }
 });
+// END: MODIFIED USERS ROUTE
 
+// START: NEW ROUTES FOR USER DELETION
+app.post('/admin/soft-delete-user/:uid', checkAdminAuth, async (req, res) => {
+    try {
+        const { uid } = req.params;
+        await pool.query('UPDATE users SET deleted_at = NOW() WHERE firebase_uid = $1', [uid]);
+        console.log(`Admin soft-deleted user ${uid}`);
+        res.redirect('/admin/users');
+    } catch (err) {
+        console.error("Error soft-deleting user:", err);
+        res.status(500).send('Error soft-deleting user.');
+    }
+});
+
+app.post('/admin/permanent-delete-user/:uid', checkAdminAuth, async (req, res) => {
+    try {
+        const { uid } = req.params;
+        await admin.auth().deleteUser(uid);
+        console.log(`Admin permanently deleted user ${uid} from Firebase Auth.`);
+        await pool.query('DELETE FROM users WHERE firebase_uid = $1', [uid]);
+        console.log(`Admin permanently deleted user ${uid} from database.`);
+        res.redirect('/admin/users');
+    } catch (err) {
+        console.error("Error permanently deleting user:", err);
+        if (err.code === 'auth/user-not-found') {
+            try {
+                const { uid } = req.params;
+                await pool.query('DELETE FROM users WHERE firebase_uid = $1', [uid]);
+                console.log(`Admin deleted orphaned user ${uid} from database.`);
+                return res.redirect('/admin/users');
+            } catch (dbErr) {
+                 return res.status(500).send('Error permanently deleting user from database.');
+            }
+        }
+        res.status(500).send('Error permanently deleting user.');
+    }
+});
+// END: NEW ROUTES FOR USER DELETION
+
+// START: MODIFIED ORDERS ROUTE
 app.get('/admin/orders', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
@@ -803,21 +864,38 @@ app.get('/admin/orders', checkAdminAuth, async (req, res) => {
             let itemsHtml = '<ul>' + Object.keys(order.cart_items).map(key => `<li>${he.encode(key)} (x${order.cart_items[key].quantity})</li>`).join('') + '</ul>';
             const statuses = ['Processing', 'Shipped', 'Delivered', 'Cancelled'];
             const statusOptions = statuses.map(s => `<option value="${s}" ${order.status === s ? 'selected' : ''}>${s}</option>`).join('');
+            
+            const actionsHtml = `<form action="/admin/delete-order/${order.id}" method="POST" style="margin-top: 5px;">
+                                    <button type="submit" class="permanent-delete-btn" onclick="return confirm('Are you sure you want to permanently delete this order record?');">Delete Order</button>
+                                 </form>`;
+
             return `
                 <tr>
-                    <td>${order.id}</td><td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td>
-                    <td>${he.encode(order.address)}</td><td>₹${order.order_amount}</td>
+                    <td>${order.id}</td>
+                    <td>${he.encode(order.customer_name)}<br>${he.encode(order.phone_number)}</td>
+                    <td>${he.encode(order.address)}</td>
+                    <td>₹${order.order_amount}</td>
                     <td><form action="/admin/update-order-status/${order.id}" method="POST"><select name="newStatus">${statusOptions}</select><button type="submit">Update</button></form></td>
-                    <td>${he.encode(order.razorpay_payment_id)}</td><td>${new Date(order.created_at).toLocaleString()}</td><td>${itemsHtml}</td>
+                    <td>${he.encode(order.razorpay_payment_id)}</td>
+                    <td>${new Date(order.created_at).toLocaleString()}</td>
+                    <td>${itemsHtml}</td>
+                    <td>${actionsHtml}</td>
                 </tr>`;
         }).join('');
         const header = getAdminHeaderHTML('Manage Orders');
-        res.send(`${header}<h1>All Orders</h1><table><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th></tr></thead><tbody>${orderRowsHtml}</tbody></table></div></body></html>`);
+        res.send(`${header}<h1>All Orders</h1>
+                    <table>
+                        <thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead>
+                        <tbody>${orderRowsHtml}</tbody>
+                    </table>
+                  </div></body></html>`);
     } catch (err) {
         console.error("Error loading orders page:", err);
         res.status(500).send('Internal Server Error');
     }
 });
+// END: MODIFIED ORDERS ROUTE
+
 app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
     const { id } = req.params;
     const { newStatus } = req.body;
@@ -833,6 +911,20 @@ app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
         res.redirect('/admin/orders');
     } catch (err) { res.status(500).send('Error updating order status.'); }
 });
+
+// START: NEW ROUTE FOR ORDER DELETION
+app.post('/admin/delete-order/:id', checkAdminAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await pool.query('DELETE FROM orders WHERE id = $1', [id]);
+        console.log(`Admin deleted order ${id}`);
+        res.redirect('/admin/orders');
+    } catch (err) {
+        console.error("Error deleting order:", err);
+        res.status(500).send('Error deleting order.');
+    }
+});
+// END: NEW ROUTE FOR ORDER DELETION
 
 app.get('/admin/coupons', checkAdminAuth, async (req, res) => {
     try {
@@ -929,6 +1021,7 @@ app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error blocking user.');
     }
 });
+
 
 app.use((err, req, res, next) => {
     console.error(err.stack);
