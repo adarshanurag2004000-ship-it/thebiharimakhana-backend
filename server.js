@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH CORRECTED COUPON LOGIC ---
+// --- FINAL server.js WITH REVIEW SYSTEM ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -89,11 +89,27 @@ async function setupDatabase() {
         `);
         console.log('INFO: "coupons" table is ready.');
         
+        // --- NEW REVIEWS TABLE ---
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS reviews (
+                id SERIAL PRIMARY KEY,
+                product_name VARCHAR(255) NOT NULL,
+                user_uid VARCHAR(255) NOT NULL,
+                rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                review_text TEXT,
+                reviewer_name VARCHAR(255),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                is_approved BOOLEAN DEFAULT TRUE
+            );
+        `);
+        console.log('INFO: "reviews" table is ready.');
+
+        // Safely add columns for review blocking
         try {
-            await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_used VARCHAR(255), ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10, 2) DEFAULT 0`);
-            console.log('SUCCESS: "orders" table updated for coupons.');
+            await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked_from_reviewing BOOLEAN DEFAULT FALSE`);
+            console.log('SUCCESS: "users" table altered for review blocking.');
         } catch (err) {
-            console.error('Error altering orders table for coupons:', err);
+            console.error('Error altering users table for review blocking:', err);
         }
 
     } catch (err) {
@@ -102,8 +118,6 @@ async function setupDatabase() {
         client.release();
     }
 }
-
-// ... All other functions are unchanged ...
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -240,29 +254,21 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
-
-// ** THIS FUNCTION IS NOW CORRECTED **
 app.post('/api/apply-coupon', async (req, res) => {
     const { cart, couponCode } = req.body;
-    // The only requirement is a cart. couponCode is optional.
     if (!cart || Object.keys(cart).length === 0) {
       return res.status(400).json({ success: false, message: 'Cart data is required.' });
     }
-
     try {
         let subtotal = 0;
         for (const productName in cart) {
             subtotal += cart[productName].price * cart[productName].quantity;
         }
-
         let shippingCost = subtotal >= 500 ? 0 : 99;
         let discount = 0;
         let appliedCoupon = null;
-
-        // Only check for a coupon if a code was provided
         if (couponCode) {
             const couponResult = await pool.query('SELECT * FROM coupons WHERE code = $1 AND is_active = TRUE', [couponCode.toUpperCase()]);
-            
             if (couponResult.rows.length > 0) {
                 const coupon = couponResult.rows[0];
                 appliedCoupon = coupon.code;
@@ -273,20 +279,16 @@ app.post('/api/apply-coupon', async (req, res) => {
                 }
                 discount = Math.min(subtotal, discount);
             } else {
-                // If a code was provided but it's invalid, return an error
                 return res.status(404).json({ success: false, message: "Invalid or inactive coupon code."});
             }
         }
-
         const total = subtotal - discount + shippingCost;
         res.json({ success: true, subtotal, shippingCost, discount, total, appliedCoupon });
-
     } catch (err) {
         console.error("Error in apply-coupon:", err);
         res.status(500).json({ success: false, message: "Error applying coupon."});
     }
 });
-
 app.post('/checkout', verifyToken, async (req, res) => {
     const { cart, addressDetails, paymentId, couponCode } = req.body;
     const user = req.user; 
@@ -298,11 +300,9 @@ app.post('/checkout', verifyToken, async (req, res) => {
         for (const productName in cart) {
             subtotal += cart[productName].price * cart[productName].quantity;
         }
-        
         let shippingCost = subtotal >= 500 ? 0 : 99;
         let discount = 0;
         let appliedCouponCode = null;
-
         if (couponCode) {
             const couponResult = await pool.query('SELECT * FROM coupons WHERE code = $1 AND is_active = TRUE', [couponCode.toUpperCase()]);
             if (couponResult.rows.length > 0) {
@@ -316,7 +316,6 @@ app.post('/checkout', verifyToken, async (req, res) => {
                 discount = Math.min(subtotal, discount);
             }
         }
-        
         const totalAmount = subtotal - discount + shippingCost;
         const query = `
             INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, user_uid, razorpay_payment_id, coupon_used, discount_amount)
@@ -327,19 +326,15 @@ app.post('/checkout', verifyToken, async (req, res) => {
             JSON.stringify(cart), totalAmount, user.uid, paymentId,
             appliedCouponCode, discount
         ];
-        
         const orderResult = await pool.query(query, values);
         const newOrder = orderResult.rows[0];
-        
         await sendOrderConfirmationEmail(user.email, addressDetails.name, newOrder, cart, subtotal, shippingCost, totalAmount, discount);
         res.json({ success: true, message: 'Order placed successfully!' });
-
     } catch (err) {
         console.error('Error during checkout:', err);
         res.status(500).json({ success: false, message: 'An internal server error occurred.' });
     }
 });
-
 app.post('/api/user-login', async (req, res) => {
     const { email, uid, phone } = req.body;
     if (!email || !uid) {
@@ -359,7 +354,6 @@ app.post('/api/user-login', async (req, res) => {
         res.status(500).json({ error: 'Internal server error.' });
     }
 });
-
 app.get('/api/my-orders', verifyToken, async (req, res) => {
     try {
         const userUid = req.user.uid;
@@ -373,7 +367,6 @@ app.get('/api/my-orders', verifyToken, async (req, res) => {
         res.status(500).send('Error fetching orders.');
     }
 });
-
 app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
     const { uid, email } = req.user;
     const code = crypto.randomInt(100000, 999999).toString();
@@ -390,7 +383,6 @@ app.post('/api/request-deletion-code', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Could not send deletion code.' });
     }
 });
-
 app.post('/api/verify-deletion', verifyToken, async (req, res) => {
     const { uid } = req.user;
     const { code } = req.body;
@@ -423,6 +415,68 @@ app.post('/api/verify-deletion', verifyToken, async (req, res) => {
     }
 });
 
+// --- NEW REVIEW API ENDPOINTS ---
+app.get('/api/products/:productName/reviews', async (req, res) => {
+    try {
+        const { productName } = req.params;
+        const { rows } = await pool.query(
+            'SELECT rating, review_text, reviewer_name, created_at FROM reviews WHERE product_name = $1 AND is_approved = TRUE ORDER BY created_at DESC',
+            [productName]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("Error fetching reviews:", err);
+        res.status(500).send('Error fetching reviews.');
+    }
+});
+
+app.post('/api/submit-review', verifyToken, async (req, res) => {
+    const { uid, name } = req.user;
+    const { productName, rating, reviewText } = req.body;
+
+    if (!productName || !rating) {
+        return res.status(400).json({ success: false, message: 'Product and rating are required.' });
+    }
+
+    try {
+        // 1. Check if user is blocked
+        const userResult = await pool.query('SELECT is_blocked_from_reviewing FROM users WHERE firebase_uid = $1', [uid]);
+        if (userResult.rows.length > 0 && userResult.rows[0].is_blocked_from_reviewing) {
+            return res.status(403).json({ success: false, message: 'You are not permitted to leave reviews.' });
+        }
+
+        // 2. Check if user has purchased this item
+        const ordersResult = await pool.query(
+            `SELECT id FROM orders WHERE user_uid = $1 AND cart_items ->> $2 IS NOT NULL AND status = 'Delivered'`,
+            [uid, productName]
+        );
+        if (ordersResult.rows.length === 0) {
+            return res.status(403).json({ success: false, message: 'You can only review products you have purchased and received.' });
+        }
+
+        // 3. Check if user has already reviewed this item
+        const existingReview = await pool.query(
+            'SELECT id FROM reviews WHERE user_uid = $1 AND product_name = $2',
+            [uid, productName]
+        );
+        if (existingReview.rows.length > 0) {
+            return res.status(409).json({ success: false, message: 'You have already reviewed this product.' });
+        }
+        
+        // 4. Insert the new review
+        await pool.query(
+            'INSERT INTO reviews (product_name, user_uid, rating, review_text, reviewer_name) VALUES ($1, $2, $3, $4, $5)',
+            [productName, uid, rating, reviewText, name]
+        );
+        
+        res.status(201).json({ success: true, message: 'Thank you! Your review has been submitted.' });
+    } catch (err) {
+        console.error("Error submitting review:", err);
+        res.status(500).json({ success: false, message: 'An error occurred while submitting your review.' });
+    }
+});
+
+
 // --- Admin Routes ---
 app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
@@ -430,7 +484,7 @@ app.get('/admin/products', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM products ORDER BY id ASC');
         const productsHtml = rows.map(p => `<tr><td>${p.id}</td><td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td><td>${he.encode(p.name)}</td><td>${p.price}</td><td>${p.sale_price || 'N/A'}</td><td>${p.stock_quantity}</td><td><a href="/admin/edit-product/${p.id}?password=${encodeURIComponent(password)}">Edit</a><form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;"><button type="submit" onclick="return confirm('Are you sure?');">Delete</button></form></td></tr>`).join('');
-        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
+        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/reviews?password=${encodeURIComponent(password)}">Manage Reviews</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
     } catch (err) {
         res.status(500).send('Error loading product management page.');
     }
@@ -509,28 +563,41 @@ app.get('/admin/users', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
-        const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at FROM users ORDER BY created_at DESC');
+        const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at, is_blocked_from_reviewing FROM users ORDER BY created_at DESC');
         const usersHtml = rows.map(user => {
             const status = user.deleted_at 
                 ? `<span style="color:red;">Deleted on ${new Date(user.deleted_at).toLocaleDateString()}</span>` 
                 : '<span style="color:green;">Active</span>';
             
-            const actionButton = user.deleted_at
+            let actionButton = user.deleted_at
                 ? `<form action="/admin/hard-delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
                         <button type="submit" onclick="return confirm('PERMANENT ACTION: Are you sure you want to permanently erase this user\\'s history? This cannot be undone.');" style="color:red; background:none; border:none; padding:0; cursor:pointer; font-weight:bold; text-decoration:underline;">Permanently Delete</button>
                     </form>`
                 : `<form action="/admin/delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
                         <button type="submit" onclick="return confirm('Are you sure you want to delete this user? They will not be able to log in again.');" style="color:orange; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Delete (Deactivate)</button>
                     </form>`;
+
+            if(!user.deleted_at){
+                actionButton += `<br>` + (user.is_blocked_from_reviewing
+                    ? `<form action="/admin/unblock-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
+                            <button type="submit" style="color:green; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Unblock Reviews</button>
+                        </form>`
+                    : `<form action="/admin/block-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
+                            <button type="submit" style="color:purple; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Block Reviews</button>
+                        </form>`
+                );
+            }
+
             return `<tr>
                 <td>${he.encode(user.email)}</td>
                 <td>${he.encode(user.phone || 'N/A')}</td> 
                 <td>${status}</td>
                 <td>${new Date(user.created_at).toLocaleString()}</td>
+                <td>${user.is_blocked_from_reviewing ? '<span style="color:purple;">Reviewing Blocked</span>' : 'Can Review'}</td>
                 <td>${actionButton}</td>
             </tr>`
         }).join('');
-        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Status</th><th>Registration Date</th><th>Actions</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
+        res.send(`<!DOCTYPE html><html><head><title>View Users</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}th{background-color:#f2f2f2}</style></head><body><h1>Registered Users</h1><table><thead><tr><th>Email</th><th>Phone</th><th>Status</th><th>Registration Date</th><th>Review Status</th><th>Actions</th></tr></thead><tbody>${usersHtml}</tbody></table></body></html>`);
     } catch (err) {
         console.error("Error loading users page:", err);
         res.status(500).send('Error loading users page.');
@@ -563,12 +630,38 @@ app.post('/admin/hard-delete-user/:uid', async (req, res) => {
         res.status(500).send(`Error permanently deleting user. <a href="/admin/users?password=${encodeURIComponent(password)}">Go back</a>`);
     }
 });
+app.post('/admin/update-order-status/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    const { id } = req.params;
+    const { newStatus } = req.body;
+    try {
+        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
+        if (orderCheck.rows.length === 0) {
+            return res.status(404).send("Order not found.");
+        }
+        const oldStatus = orderCheck.rows[0].status;
+        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
+        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
+            const order = orderCheck.rows[0];
+            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
+            if (userResult.rows.length > 0) {
+                const customerEmail = userResult.rows[0].email;
+                await sendOrderShippedEmail(customerEmail, order.customer_name, id);
+            }
+        }
+        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        console.error(`Error updating status for order ${id}:`, err);
+        res.status(500).send('Error updating order status.');
+    }
+});
 app.get('/view-orders', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
-        let html = `<h1>All Orders</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/products?password=${encodeURIComponent(password)}">Manage Products</a><br><br><table border="1" style="width:100%; border-collapse: collapse;"><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead><tbody>`;
+        let html = `<h1>All Orders</h1><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/products?password=${encodeURIComponent(password)}">Manage Products</a><br><a href="/admin/reviews?password=${encodeURIComponent(password)}">Manage Reviews</a><br><br><table border="1" style="width:100%; border-collapse: collapse;"><thead><tr><th>ID</th><th>Customer</th><th>Address</th><th>Amount</th><th>Status</th><th>Payment ID</th><th>Date</th><th>Items</th><th>Actions</th></tr></thead><tbody>`;
         rows.forEach(order => {
             let itemsHtml = 'N/A';
             if (order.cart_items) {
@@ -607,32 +700,6 @@ app.get('/view-orders', async (req, res) => {
     } catch (err) {
         console.error("Error loading orders page:", err);
         res.status(500).send('Internal Server Error');
-    }
-});
-app.post('/admin/update-order-status/:id', async (req, res) => {
-    const { password } = req.query;
-    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    const { id } = req.params;
-    const { newStatus } = req.body;
-    try {
-        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
-        if (orderCheck.rows.length === 0) {
-            return res.status(404).send("Order not found.");
-        }
-        const oldStatus = orderCheck.rows[0].status;
-        await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
-        if (newStatus === 'Shipped' && oldStatus !== 'Shipped') {
-            const order = orderCheck.rows[0];
-            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [order.user_uid]);
-            if (userResult.rows.length > 0) {
-                const customerEmail = userResult.rows[0].email;
-                await sendOrderShippedEmail(customerEmail, order.customer_name, id);
-            }
-        }
-        res.redirect(`/view-orders?password=${encodeURIComponent(password)}`);
-    } catch (err) {
-        console.error(`Error updating status for order ${id}:`, err);
-        res.status(500).send('Error updating order status.');
     }
 });
 app.post('/admin/delete-order/:id', async (req, res) => {
@@ -731,6 +798,78 @@ app.post('/admin/delete-coupon/:id', async (req, res) => {
         res.status(500).send('Error deleting coupon.');
     }
 });
+
+// --- NEW ADMIN ROUTES FOR REVIEWS ---
+app.get('/admin/reviews', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        const { rows } = await pool.query('SELECT r.id, r.product_name, r.rating, r.review_text, r.reviewer_name, r.user_uid, u.email FROM reviews r JOIN users u ON r.user_uid = u.firebase_uid ORDER BY r.created_at DESC');
+        const reviewsHtml = rows.map(r => `<tr>
+            <td>${r.id}</td>
+            <td>${he.encode(r.product_name)}</td>
+            <td>${he.encode(r.reviewer_name)}<br>(${he.encode(r.email)})</td>
+            <td>${'⭐'.repeat(r.rating)}</td>
+            <td>${he.encode(r.review_text || '')}</td>
+            <td>
+                <form action="/admin/delete-review/${r.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block; margin-bottom: 5px;">
+                    <button type="submit" onclick="return confirm('Are you sure you want to delete this review?');" style="color:red;">Delete Review</button>
+                </form>
+                <form action="/admin/block-user/${r.user_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline-block;">
+                    <button type="submit" onclick="return confirm('Are you sure you want to block this user from leaving future reviews?');" style="color:purple;">Block User</button>
+                </form>
+            </td>
+        </tr>`).join('');
+
+        res.send(`
+            <!DOCTYPE html><html><head><title>Manage Reviews</title>
+            <style>body{font-family:sans-serif;margin:2em} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:8px; text-align:left;} td:first-child, td:nth-child(4){text-align:center;}</style>
+            </head><body>
+            <h1>Manage Reviews</h1>
+            <a href="/view-orders?password=${encodeURIComponent(password)}">Back to Orders</a>
+            <table><thead><tr><th>ID</th><th>Product</th><th>Reviewer</th><th>Rating</th><th>Review Text</th><th>Actions</th></tr></thead>
+            <tbody>${reviewsHtml}</tbody></table>
+            </body></html>
+        `);
+    } catch (err) {
+        res.status(500).send('Error loading reviews management page.');
+    }
+});
+
+app.post('/admin/delete-review/:id', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        await pool.query('DELETE FROM reviews WHERE id = $1', [req.params.id]);
+        res.redirect(`/admin/reviews?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error deleting review.');
+    }
+});
+
+app.post('/admin/block-user/:uid', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        await pool.query('UPDATE users SET is_blocked_from_reviewing = TRUE WHERE firebase_uid = $1', [req.params.uid]);
+        res.redirect(`/admin/reviews?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error blocking user.');
+    }
+});
+
+app.post('/admin/unblock-user/:uid', async (req, res) => {
+    const { password } = req.query;
+    if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
+    try {
+        await pool.query('UPDATE users SET is_blocked_from_reviewing = FALSE WHERE firebase_uid = $1', [req.params.uid]);
+        res.redirect(`/admin/users?password=${encodeURIComponent(password)}`);
+    } catch (err) {
+        res.status(500).send('Error unblocking user.');
+    }
+});
+
+
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).send('Something broke!');
