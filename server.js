@@ -1,4 +1,4 @@
-// --- SERVER.JS WITH CATEGORY SUPPORT ---
+// --- SERVER.JS WITH FIXED CATEGORY SAVING LOGIC & ADMIN PANEL ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -46,7 +46,6 @@ const pool = new Pool({
 async function setupDatabase() {
     const client = await pool.connect();
     try {
-        // --- MODIFIED: ADDED category COLUMN TO products TABLE ---
         await client.query(`
             CREATE TABLE IF NOT EXISTS products (
                 id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, price NUMERIC(10, 2) NOT NULL, description TEXT,
@@ -57,7 +56,6 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "products" table is ready.');
-        // ... other tables remain the same
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY, customer_name VARCHAR(255) NOT NULL, phone_number VARCHAR(20) NOT NULL,
@@ -128,7 +126,6 @@ async function setupDatabase() {
         client.release();
     }
 }
-// (verifyToken and email functions are unchanged)
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -216,7 +213,6 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     }
 }
 
-
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
@@ -226,7 +222,6 @@ app.get('/', async (req, res) => {
     }
 });
 
-// --- MODIFIED: /api/products now accepts a category filter ---
 app.get('/api/products', async (req, res) => {
     try {
         const { search, sort, category } = req.query;
@@ -257,8 +252,6 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
-
-// (Other public API routes are unchanged)
 app.get('/api/featured-products', async (req, res) => {
     try {
         const { rows } = await pool.query(
@@ -536,6 +529,7 @@ app.get('/api/active-coupons', async (req, res) => {
 });
 
 // --- Admin Routes ---
+
 const checkAdminAuth = (req, res, next) => {
     if (req.cookies.admin_session && req.cookies.admin_session === process.env.ADMIN_SESSION_SECRET) {
         next();
@@ -559,7 +553,7 @@ const getAdminHeaderHTML = (currentPageTitle) => {
             img { max-width: 50px; }
             .add-form { margin-top: 2em; padding: 1.5em; border: 1px solid #ddd; background-color: white; }
             .logout-btn { background-color: #f44336; color: white; padding: 0.5em 1em; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; }
-            .form-group{margin-bottom:1em;} label{display:block;margin-bottom:0.5em;} input, select, button, textarea{padding:8px; width: 300px;}
+            .form-group{margin-bottom:1em;} label{display:block;margin-bottom:0.5em;} input, select, button, textarea{padding:8px; width: 300px; box-sizing: border-box;}
         </style>
         </head><body>
         <nav class="admin-nav">
@@ -578,7 +572,7 @@ const getAdminHeaderHTML = (currentPageTitle) => {
         <div class="admin-container">
     `;
 };
-// (Admin login, logout, and dashboard routes are unchanged)
+
 app.get('/admin/login', (req, res) => {
     res.send(`
         <!DOCTYPE html><html><head><title>Admin Login</title><style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background-color:#f4f4f9;} .login-box{padding:2em;border:1px solid #ccc;background:white;box-shadow:0 4px 8px rgba(0,0,0,0.1);}.login-box h1{text-align:center;margin-top:0;}input{width:100%;padding:0.8em;margin-bottom:1em;box-sizing:border-box;}button{width:100%;padding:0.8em;background-color:#333;color:white;border:none;cursor:pointer;}</style></head>
@@ -608,7 +602,6 @@ app.get('/admin/dashboard', checkAdminAuth, (req, res) => {
     res.send(`${header}<h1>Welcome to the Admin Dashboard</h1><p>Select a category from the navigation bar to get started.</p></div></body></html>`);
 });
 
-// --- MODIFIED: Admin product routes now include the category field ---
 app.get('/admin/products', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM products ORDER BY id ASC');
@@ -649,11 +642,17 @@ app.get('/admin/products', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error loading product management page.');
     }
 });
+
 app.post('/admin/add-product', checkAdminAuth, async (req, res) => {
     const productSchema = Joi.object({
-        productName: Joi.string().required(), category: Joi.string().required(), price: Joi.number().required(),
-        salePrice: Joi.number().allow(null, ''), stockQuantity: Joi.number().integer().required(),
-        description: Joi.string().required(), imageUrl: Joi.string().uri().required(), is_featured: Joi.boolean()
+        productName: Joi.string().required(),
+        category: Joi.string().valid('premium-raw-makhana', 'premium-flavored-makhana', 'nuts').required(),
+        price: Joi.number().required(),
+        salePrice: Joi.number().allow(null, '').empty(''),
+        stockQuantity: Joi.number().integer().required(),
+        description: Joi.string().required(),
+        imageUrl: Joi.string().uri().required(),
+        is_featured: Joi.boolean()
     });
     const isFeatured = req.body.is_featured === 'true'; 
     const { error, value } = productSchema.validate({ ...req.body, is_featured: isFeatured });
@@ -664,8 +663,12 @@ app.post('/admin/add-product', checkAdminAuth, async (req, res) => {
             [value.productName, value.price, value.salePrice || null, value.stockQuantity, value.description, value.imageUrl, value.is_featured, value.category]
         );
         res.redirect(`/admin/products`);
-    } catch (err) { res.status(500).send('Error adding product.'); }
+    } catch (err) {
+        console.error("Error adding product:", err);
+        res.status(500).send('Error adding product.');
+    }
 });
+
 app.get('/admin/edit-product/:id', checkAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
@@ -692,12 +695,18 @@ app.get('/admin/edit-product/:id', checkAdminAuth, async (req, res) => {
         </form></div></body></html>`);
     } catch (err) { res.status(500).send('Error loading edit page.'); }
 });
+
 app.post('/admin/update-product/:id', checkAdminAuth, async (req, res) => {
     const { id } = req.params;
     const productSchema = Joi.object({
-        productName: Joi.string().required(), category: Joi.string().required(), price: Joi.number().required(),
-        salePrice: Joi.number().allow(null, ''), stockQuantity: Joi.number().integer().required(),
-        description: Joi.string().required(), imageUrl: Joi.string().uri().required(), is_featured: Joi.boolean()
+        productName: Joi.string().required(),
+        category: Joi.string().valid('premium-raw-makhana', 'premium-flavored-makhana', 'nuts').required(),
+        price: Joi.number().required(),
+        salePrice: Joi.number().allow(null, '').empty(''),
+        stockQuantity: Joi.number().integer().required(),
+        description: Joi.string().required(),
+        imageUrl: Joi.string().uri().required(),
+        is_featured: Joi.boolean()
     });
     const isFeatured = req.body.is_featured === 'true';
     const { error, value } = productSchema.validate({ ...req.body, is_featured: isFeatured });
@@ -708,9 +717,12 @@ app.post('/admin/update-product/:id', checkAdminAuth, async (req, res) => {
             [value.productName, value.price, value.description, value.imageUrl, value.salePrice || null, value.stockQuantity, value.is_featured, value.category, id]
         );
         res.redirect(`/admin/products`);
-    } catch (err) { res.status(500).send('Error updating product.'); }
+    } catch (err) {
+        console.error("Error updating product:", err);
+        res.status(500).send('Error updating product.');
+    }
 });
-// (Other admin routes like toggle-featured, delete-product, users, orders, coupons, reviews are unchanged)
+
 app.post('/admin/toggle-featured/:id', checkAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
@@ -721,12 +733,14 @@ app.post('/admin/toggle-featured/:id', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error updating product.');
     }
 });
+
 app.post('/admin/delete-product/:id', checkAdminAuth, async (req, res) => {
     try {
         await pool.query('DELETE FROM products WHERE id = $1', [req.params.id]);
         res.redirect(`/admin/products`);
     } catch (err) { res.status(500).send('Error deleting product.'); }
 });
+
 app.get('/admin/users', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at, is_blocked_from_reviewing FROM users ORDER BY created_at DESC');
@@ -741,6 +755,7 @@ app.get('/admin/users', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error loading users page.');
     }
 });
+
 app.get('/admin/orders', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
@@ -811,6 +826,7 @@ app.get('/admin/coupons', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error loading coupon management page.');
     }
 });
+
 app.post('/admin/add-coupon', checkAdminAuth, async (req, res) => {
     const { code, discount_type, discount_value } = req.body;
     try {
@@ -820,6 +836,7 @@ app.post('/admin/add-coupon', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error adding coupon.');
     }
 });
+
 app.post('/admin/delete-coupon/:id', checkAdminAuth, async (req, res) => {
     try {
         await pool.query('DELETE FROM coupons WHERE id = $1', [req.params.id]);
@@ -828,6 +845,7 @@ app.post('/admin/delete-coupon/:id', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error deleting coupon.');
     }
 });
+
 app.get('/admin/reviews', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT r.id, r.product_name, r.rating, r.review_text, r.reviewer_name, r.user_uid, u.email FROM reviews r JOIN users u ON r.user_uid = u.firebase_uid ORDER BY r.created_at DESC');
@@ -852,6 +870,7 @@ app.get('/admin/reviews', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error loading reviews management page.');
     }
 });
+
 app.post('/admin/delete-review/:id', checkAdminAuth, async (req, res) => {
     try {
         await pool.query('DELETE FROM reviews WHERE id = $1', [req.params.id]);
@@ -860,6 +879,7 @@ app.post('/admin/delete-review/:id', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error deleting review.');
     }
 });
+
 app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => {
     try {
         await pool.query('UPDATE users SET is_blocked_from_reviewing = TRUE WHERE firebase_uid = $1', [req.params.uid]);
