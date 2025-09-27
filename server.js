@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH REVIEW SYSTEM ---
+// --- FINAL server.js WITH CORRECTED REVIEW CHECK ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -72,7 +72,8 @@ async function setupDatabase() {
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 delete_code VARCHAR(6),
                 delete_code_expires_at TIMESTAMP WITH TIME ZONE,
-                deleted_at TIMESTAMP WITH TIME ZONE
+                deleted_at TIMESTAMP WITH TIME ZONE,
+                is_blocked_from_reviewing BOOLEAN DEFAULT FALSE
             );
         `);
         console.log('INFO: "users" table is ready.');
@@ -89,7 +90,6 @@ async function setupDatabase() {
         `);
         console.log('INFO: "coupons" table is ready.');
         
-        // --- NEW REVIEWS TABLE ---
         await client.query(`
             CREATE TABLE IF NOT EXISTS reviews (
                 id SERIAL PRIMARY KEY,
@@ -104,20 +104,13 @@ async function setupDatabase() {
         `);
         console.log('INFO: "reviews" table is ready.');
 
-        // Safely add columns for review blocking
-        try {
-            await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked_from_reviewing BOOLEAN DEFAULT FALSE`);
-            console.log('SUCCESS: "users" table altered for review blocking.');
-        } catch (err) {
-            console.error('Error altering users table for review blocking:', err);
-        }
-
     } catch (err) {
         console.error('Error setting up database tables:', err);
     } finally {
         client.release();
     }
 }
+
 async function verifyToken(req, res, next) {
     const idToken = req.headers.authorization?.split('Bearer ')[1];
     if (!idToken) {
@@ -415,13 +408,17 @@ app.post('/api/verify-deletion', verifyToken, async (req, res) => {
     }
 });
 
-// --- NEW REVIEW API ENDPOINTS ---
+// --- REVIEW API ENDPOINTS ---
 app.get('/api/products/:productName/reviews', async (req, res) => {
     try {
         const { productName } = req.params;
+        // Normalize the name to handle both 'classic-salted' and 'classic salted'
+        const nameWithHyphen = productName.replace(/ /g, '-');
+        const nameWithSpace = productName.replace(/-/g, ' ');
+
         const { rows } = await pool.query(
-            'SELECT rating, review_text, reviewer_name, created_at FROM reviews WHERE product_name = $1 AND is_approved = TRUE ORDER BY created_at DESC',
-            [productName]
+            'SELECT rating, review_text, reviewer_name, created_at FROM reviews WHERE (product_name = $1 OR product_name = $2) AND is_approved = TRUE ORDER BY created_at DESC',
+            [nameWithHyphen, nameWithSpace]
         );
         res.json(rows);
     } catch (err) {
@@ -439,34 +436,37 @@ app.post('/api/submit-review', verifyToken, async (req, res) => {
     }
 
     try {
-        // 1. Check if user is blocked
         const userResult = await pool.query('SELECT is_blocked_from_reviewing FROM users WHERE firebase_uid = $1', [uid]);
         if (userResult.rows.length > 0 && userResult.rows[0].is_blocked_from_reviewing) {
             return res.status(403).json({ success: false, message: 'You are not permitted to leave reviews.' });
         }
 
-        // 2. Check if user has purchased this item
+        // ** THIS IS THE CORRECTED LOGIC **
+        // Create both versions of the product name to check against the JSON in the database
+        const productNameWithHyphens = productName.replace(/ /g, '-');
+        const productNameWithSpaces = productName.replace(/-/g, ' ');
+
         const ordersResult = await pool.query(
-            `SELECT id FROM orders WHERE user_uid = $1 AND cart_items ->> $2 IS NOT NULL AND status = 'Delivered'`,
-            [uid, productName]
+            `SELECT id FROM orders WHERE user_uid = $1 AND (cart_items ->> $2 IS NOT NULL OR cart_items ->> $3 IS NOT NULL) AND status = 'Delivered'`,
+            [uid, productNameWithHyphens, productNameWithSpaces]
         );
+
         if (ordersResult.rows.length === 0) {
             return res.status(403).json({ success: false, message: 'You can only review products you have purchased and received.' });
         }
 
-        // 3. Check if user has already reviewed this item
         const existingReview = await pool.query(
-            'SELECT id FROM reviews WHERE user_uid = $1 AND product_name = $2',
-            [uid, productName]
+            'SELECT id FROM reviews WHERE user_uid = $1 AND (product_name = $2 OR product_name = $3)',
+            [uid, productNameWithHyphens, productNameWithSpaces]
         );
         if (existingReview.rows.length > 0) {
             return res.status(409).json({ success: false, message: 'You have already reviewed this product.' });
         }
         
-        // 4. Insert the new review
+        // We save the review with the hyphenated version for consistency
         await pool.query(
             'INSERT INTO reviews (product_name, user_uid, rating, review_text, reviewer_name) VALUES ($1, $2, $3, $4, $5)',
-            [productName, uid, rating, reviewText, name]
+            [productNameWithHyphens, uid, rating, reviewText, name]
         );
         
         res.status(201).json({ success: true, message: 'Thank you! Your review has been submitted.' });
@@ -798,8 +798,6 @@ app.post('/admin/delete-coupon/:id', async (req, res) => {
         res.status(500).send('Error deleting coupon.');
     }
 });
-
-// --- NEW ADMIN ROUTES FOR REVIEWS ---
 app.get('/admin/reviews', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -832,10 +830,10 @@ app.get('/admin/reviews', async (req, res) => {
             </body></html>
         `);
     } catch (err) {
+        console.error("Error loading reviews page:", err);
         res.status(500).send('Error loading reviews management page.');
     }
 });
-
 app.post('/admin/delete-review/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -846,7 +844,6 @@ app.post('/admin/delete-review/:id', async (req, res) => {
         res.status(500).send('Error deleting review.');
     }
 });
-
 app.post('/admin/block-user/:uid', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -857,7 +854,6 @@ app.post('/admin/block-user/:uid', async (req, res) => {
         res.status(500).send('Error blocking user.');
     }
 });
-
 app.post('/admin/unblock-user/:uid', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -868,8 +864,6 @@ app.post('/admin/unblock-user/:uid', async (req, res) => {
         res.status(500).send('Error unblocking user.');
     }
 });
-
-
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).send('Something broke!');
