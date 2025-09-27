@@ -1,4 +1,4 @@
-// --- SERVER.JS WITH CATEGORY SUPPORT ---
+// --- SERVER.JS WITH AUTOMATIC DATABASE FIX ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -43,8 +43,7 @@ const pool = new Pool({
     }
 });
 
-// --- Database setup, token verification, and email functions are unchanged. ---
-// (Omitted for brevity, they are the same as the previous version)
+
 async function setupDatabase() {
     const client = await pool.connect();
     try {
@@ -62,7 +61,24 @@ async function setupDatabase() {
                 category VARCHAR(100)
             );
         `);
-        console.log('INFO: "products" table is ready.');
+        console.log('INFO: "products" table schema is up to date.');
+        
+        // --- START: AUTOMATIC FIX FOR MISSING 'category' COLUMN ---
+        console.log('INFO: Checking if "category" column exists in "products" table...');
+        const checkColumnResult = await client.query(`
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'products' AND column_name = 'category'
+        `);
+
+        if (checkColumnResult.rowCount === 0) {
+            console.log('ACTION: "category" column not found. Adding it now...');
+            await client.query('ALTER TABLE products ADD COLUMN category VARCHAR(100);');
+            console.log('SUCCESS: "category" column has been added to the "products" table.');
+        } else {
+            console.log('INFO: "category" column already exists. No action needed.');
+        }
+        // --- END: AUTOMATIC FIX ---
+
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY, customer_name VARCHAR(255) NOT NULL, phone_number VARCHAR(20) NOT NULL,
@@ -128,7 +144,7 @@ async function setupDatabase() {
         `);
         console.log('INFO: "addresses" table is ready.');
     } catch (err) {
-        console.error('Error setting up database tables:', err);
+        console.error('Error during database setup:', err);
     } finally {
         client.release();
     }
@@ -818,7 +834,6 @@ app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
     } catch (err) { res.status(500).send('Error updating order status.'); }
 });
 
-// --- MODIFIED: Coupons and Reviews routes are now fully implemented ---
 app.get('/admin/coupons', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM coupons ORDER BY created_at DESC');
