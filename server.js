@@ -1,4 +1,4 @@
-// --- FINAL server.js WITH FEATURED PRODUCTS ---
+// --- FINAL server.js WITH DYNAMIC BANNER SUPPORT ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -30,7 +30,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 200, // Increased for new API calls
+    max: 150,
 });
 app.use(limiter);
 
@@ -52,15 +52,6 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "products" table is ready.');
-        
-        // Safely add the is_featured column
-        try {
-            await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS is_featured BOOLEAN DEFAULT FALSE`);
-            console.log('SUCCESS: "products" table altered for featured products.');
-        } catch (err) {
-            console.error('Error altering products table:', err);
-        }
-
         await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY, customer_name VARCHAR(255) NOT NULL, phone_number VARCHAR(20) NOT NULL,
@@ -272,17 +263,6 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
-
-// NEW ENDPOINT FOR FEATURED PRODUCTS
-app.get('/api/featured-products', async (req, res) => {
-    try {
-        const { rows } = await pool.query('SELECT * FROM products WHERE is_featured = TRUE AND stock_quantity > 0');
-        res.json(rows);
-    } catch (err) {
-        res.status(500).send('Error fetching featured products');
-    }
-});
-
 app.post('/api/apply-coupon', async (req, res) => {
     const { cart, couponCode } = req.body;
     if (!cart || Object.keys(cart).length === 0) {
@@ -459,17 +439,17 @@ app.get('/api/products/:productName/reviews', async (req, res) => {
     }
 });
 app.post('/api/submit-review', verifyToken, async (req, res) => {
-    const { uid } = req.user;
+    const { uid, name } = req.user;
     const { productName, rating, reviewText } = req.body;
     if (!productName || !rating) {
         return res.status(400).json({ success: false, message: 'Product and rating are required.' });
     }
     try {
-        const userResult = await pool.query('SELECT is_blocked_from_reviewing, name FROM users WHERE firebase_uid = $1', [uid]);
+        const userResult = await pool.query('SELECT is_blocked_from_reviewing FROM users WHERE firebase_uid = $1', [uid]);
         if (userResult.rows.length > 0 && userResult.rows[0].is_blocked_from_reviewing) {
             return res.status(403).json({ success: false, message: 'You are not permitted to leave reviews.' });
         }
-        const reviewerName = req.user.name;
+        const reviewerName = name;
         const productNameWithHyphens = productName.replace(/ /g, '-');
         const productNameWithSpaces = productName.replace(/-/g, ' ');
         const ordersResult = await pool.query(
@@ -538,13 +518,14 @@ app.delete('/api/my-addresses/:id', verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Could not delete address.' });
     }
 });
+// --- NEW ROUTE TO GET ACTIVE COUPONS FOR BANNER ---
 app.get('/api/active-coupons', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT code, discount_type, discount_value FROM coupons WHERE is_active = TRUE');
         res.json(rows);
     } catch (err) {
         console.error("Error fetching active coupons:", err);
-        res.status(500).json([]);
+        res.status(500).json([]); // Return empty array on error
     }
 });
 
@@ -553,17 +534,9 @@ app.get('/admin/products', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     try {
-        const { rows } = await pool.query('SELECT *, is_featured FROM products ORDER BY id ASC'); // Make sure to select is_featured
-        const productsHtml = rows.map(p => `<tr>
-            <td>${p.id}</td>
-            <td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td>
-            <td>${he.encode(p.name)}</td>
-            <td>${p.price}</td><td>${p.sale_price || 'N/A'}</td>
-            <td>${p.stock_quantity}</td>
-            <td>${p.is_featured ? 'Yes' : 'No'}</td>
-            <td><a href="/admin/edit-product/${p.id}?password=${encodeURIComponent(password)}">Edit</a><form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;"><button type="submit" onclick="return confirm('Are you sure?');">Delete</button></form></td>
-        </tr>`).join('');
-        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/view-orders?password=${encodeURIComponent(password)}">View Orders</a><br><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/reviews?password=${encodeURIComponent(password)}">Manage Reviews</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Featured?</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><p><label>Feature on Homepage: <input type="checkbox" name="is_featured" value="true"></label></p><button type="submit">Add Product</button></form></div></body></html>`);
+        const { rows } = await pool.query('SELECT * FROM products ORDER BY id ASC');
+        const productsHtml = rows.map(p => `<tr><td>${p.id}</td><td><img src="${p.image_url}" alt="${he.encode(p.name)}" width="50"></td><td>${he.encode(p.name)}</td><td>${p.price}</td><td>${p.sale_price || 'N/A'}</td><td>${p.stock_quantity}</td><td><a href="/admin/edit-product/${p.id}?password=${encodeURIComponent(password)}">Edit</a><form action="/admin/delete-product/${p.id}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;"><button type="submit" onclick="return confirm('Are you sure?');">Delete</button></form></td></tr>`).join('');
+        res.send(`<!DOCTYPE html><html><head><title>Manage Products</title><style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}img{max-width:50px}.add-form{margin-top:2em;padding:1em;border:1px solid #ddd}</style></head><body><h1>Manage Products</h1><a href="/view-orders?password=${encodeURIComponent(password)}">View Orders</a><br><a href="/admin/coupons?password=${encodeURIComponent(password)}">Manage Coupons</a><br><a href="/admin/reviews?password=${encodeURIComponent(password)}">Manage Reviews</a><br><br><table><thead><tr><th>ID</th><th>Image</th><th>Name</th><th>Price</th><th>Sale Price</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${productsHtml}</tbody></table><div class="add-form"><h2>Add New Product</h2><form action="/add-product?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="10" required></label></p><p><label>Description: <textarea name="description" required></textarea></label></p><p><label>Image URL: <input name="imageUrl" required></label></p><button type="submit">Add Product</button></form></div></body></html>`);
     } catch (err) {
         res.status(500).send('Error loading product management page.');
     }
@@ -571,13 +544,20 @@ app.get('/admin/products', async (req, res) => {
 app.post('/add-product', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
-    // is_featured will be 'true' if checked, or undefined if not. Coerce to boolean.
-    const isFeatured = !!req.body.is_featured; 
-    const { productName, price, salePrice, stockQuantity, description, imageUrl } = req.body;
+    const productSchema = Joi.object({
+        productName: Joi.string().required(),
+        price: Joi.number().required(),
+        salePrice: Joi.number().allow(null, ''),
+        stockQuantity: Joi.number().integer().required(),
+        description: Joi.string().required(),
+        imageUrl: Joi.string().uri().required()
+    });
+    const { error, value } = productSchema.validate(req.body);
+    if (error) { return res.status(400).send(error.details[0].message); }
     try {
         await pool.query(
-            'INSERT INTO products(name, price, sale_price, stock_quantity, description, image_url, is_featured) VALUES($1, $2, $3, $4, $5, $6, $7)',
-            [productName, price, salePrice || null, stockQuantity, description, imageUrl, isFeatured]
+            'INSERT INTO products(name, price, sale_price, stock_quantity, description, image_url) VALUES($1, $2, $3, $4, $5, $6)',
+            [value.productName, value.price, value.salePrice || null, value.stockQuantity, value.description, value.imageUrl]
         );
         res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
     } catch (err) {
@@ -592,8 +572,7 @@ app.get('/admin/edit-product/:id', async (req, res) => {
         const { rows } = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
         if (rows.length === 0) { return res.status(404).send('Product not found.'); }
         const p = rows[0];
-        const isChecked = p.is_featured ? 'checked' : '';
-        res.send(`<!DOCTYPE html><html><head><title>Edit Product</title><style>body{font-family:sans-serif;margin:2em}label,input,textarea{display:block;width:300px;margin-bottom:1em}</style></head><body><h1>Edit: ${he.encode(p.name)}</h1><form action="/admin/update-product/${p.id}?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" value="${he.encode(p.name)}" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" value="${p.price}" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01" value="${p.sale_price || ''}"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="${p.stock_quantity}" required></label></p><p><label>Description: <textarea name="description" required>${he.encode(p.description)}</textarea></label></p><p><label>Image URL: <input name="imageUrl" value="${p.image_url}" required></label></p><p><label>Feature on Homepage: <input type="checkbox" name="is_featured" value="true" ${isChecked}></label></p><button type="submit">Update</button></form></body></html>`);
+        res.send(`<!DOCTYPE html><html><head><title>Edit Product</title><style>body{font-family:sans-serif;margin:2em}label,input,textarea{display:block;width:300px;margin-bottom:1em}</style></head><body><h1>Edit: ${he.encode(p.name)}</h1><form action="/admin/update-product/${p.id}?password=${encodeURIComponent(password)}" method="POST"><p><label>Name: <input name="productName" value="${he.encode(p.name)}" required></label></p><p><label>Price: <input name="price" type="number" step="0.01" value="${p.price}" required></label></p><p><label>Sale Price: <input name="salePrice" type="number" step="0.01" value="${p.sale_price || ''}"></label></p><p><label>Stock: <input name="stockQuantity" type="number" value="${p.stock_quantity}" required></label></p><p><label>Description: <textarea name="description" required>${he.encode(p.description)}</textarea></label></p><p><label>Image URL: <input name="imageUrl" value="${p.image_url}" required></label></p><button type="submit">Update</button></form></body></html>`);
     } catch (err) {
         res.status(500).send('Error loading edit page.');
     }
@@ -602,20 +581,26 @@ app.post('/admin/update-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
     const { id } = req.params;
-    const isFeatured = !!req.body.is_featured;
-    const { productName, price, description, imageUrl, salePrice, stockQuantity } = req.body;
+    const productSchema = Joi.object({
+        productName: Joi.string().required(),
+        price: Joi.number().required(),
+        salePrice: Joi.number().allow(null, ''),
+        stockQuantity: Joi.number().integer().required(),
+        description: Joi.string().required(),
+        imageUrl: Joi.string().uri().required()
+    });
+    const { error, value } = productSchema.validate(req.body);
+    if (error) { return res.status(400).send(error.details[0].message); }
     try {
         await pool.query(
-            'UPDATE products SET name = $1, price = $2, description = $3, image_url = $4, sale_price = $5, stock_quantity = $6, is_featured = $7 WHERE id = $8',
-            [productName, price, description, imageUrl, salePrice || null, stockQuantity, isFeatured, id]
+            'UPDATE products SET name = $1, price = $2, description = $3, image_url = $4, sale_price = $5, stock_quantity = $6 WHERE id = $7',
+            [value.productName, value.price, value.description, value.imageUrl, value.salePrice || null, value.stockQuantity, id]
         );
         res.redirect(`/admin/products?password=${encodeURIComponent(password)}`);
     } catch (err) {
         res.status(500).send('Error updating product.');
     }
 });
-// ... The rest of the routes are unchanged
-// I am including them for completeness.
 app.post('/admin/delete-product/:id', async (req, res) => {
     const { password } = req.query;
     if (password !== process.env.ADMIN_PASSWORD) { return res.status(403).send('Access Denied'); }
@@ -635,6 +620,7 @@ app.get('/admin/users', async (req, res) => {
             const status = user.deleted_at 
                 ? `<span style="color:red;">Deleted on ${new Date(user.deleted_at).toLocaleDateString()}</span>` 
                 : '<span style="color:green;">Active</span>';
+            
             let actionButton = user.deleted_at
                 ? `<form action="/admin/hard-delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
                         <button type="submit" onclick="return confirm('PERMANENT ACTION: Are you sure you want to permanently erase this user\\'s history? This cannot be undone.');" style="color:red; background:none; border:none; padding:0; cursor:pointer; font-weight:bold; text-decoration:underline;">Permanently Delete</button>
@@ -642,6 +628,7 @@ app.get('/admin/users', async (req, res) => {
                 : `<form action="/admin/delete-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
                         <button type="submit" onclick="return confirm('Are you sure you want to delete this user? They will not be able to log in again.');" style="color:orange; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline;">Delete (Deactivate)</button>
                     </form>`;
+
             if(!user.deleted_at){
                 actionButton += `<br>` + (user.is_blocked_from_reviewing
                     ? `<form action="/admin/unblock-user/${user.firebase_uid}?password=${encodeURIComponent(password)}" method="POST" style="display:inline;">
@@ -652,6 +639,7 @@ app.get('/admin/users', async (req, res) => {
                         </form>`
                 );
             }
+
             return `<tr>
                 <td>${he.encode(user.email)}</td>
                 <td>${he.encode(user.phone || 'N/A')}</td> 
