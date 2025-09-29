@@ -1,4 +1,4 @@
-// --- SERVER.JS WITH ADMIN DELETE FUNCTIONS (COMPLETE CODE) ---
+// --- SERVER.JS WITH PDF INVOICE GENERATION (COMPLETE CODE) ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -11,6 +11,7 @@ require('dotenv').config();
 const sgMail = require('@sendgrid/mail');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
+const PDFDocument = require('pdfkit'); // PDF LIBRARY
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -160,32 +161,137 @@ async function verifyToken(req, res, next) {
         res.status(403).send('Unauthorized');
     }
 }
-async function sendOrderConfirmationEmail(customerEmail, customerName, order, cart, subtotal, shippingCost, total, discount = 0) {
+
+// START: NEW INVOICE PDF GENERATION FUNCTION
+function generateInvoicePdf(order, callback) {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {
+        const pdfData = Buffer.concat(buffers);
+        callback(pdfData);
+    });
+
+    // Header
+    doc.fontSize(20).font('Helvetica-Bold').text('The Bihari Makhana', { align: 'center' });
+    doc.fontSize(10).font('Helvetica').text('Bhagalpur, Bihar, India', { align: 'center' });
+    doc.moveDown(2);
+
+    // Invoice Details
+    doc.fontSize(16).font('Helvetica-Bold').text('INVOICE', { align: 'left' });
+    doc.fontSize(10).font('Helvetica');
+    doc.text(`Invoice #: ${order.id}`);
+    doc.text(`Order Date: ${new Date(order.created_at).toLocaleDateString('en-IN')}`);
+    doc.moveDown();
+    
+    // Customer Details
+    doc.text('Bill To:', { font: 'Helvetica-Bold' });
+    doc.text(he.decode(order.customer_name));
+    doc.text(he.decode(order.address));
+    doc.text(`Phone: ${order.phone_number}`);
+    doc.moveDown(2);
+    
+    // Items Table Header
+    const tableTop = doc.y;
+    doc.font('Helvetica-Bold');
+    doc.text('Item', 50, tableTop);
+    doc.text('Qty', 300, tableTop, { width: 90, align: 'right' });
+    doc.text('Unit Price', 370, tableTop, { width: 90, align: 'right' });
+    doc.text('Total', 0, tableTop, { align: 'right' });
+    doc.moveTo(50, doc.y + 5).lineTo(550, doc.y + 5).stroke();
+    doc.font('Helvetica');
+    doc.moveDown();
+
+    // Items Table Rows
+    let subtotal = 0;
+    for (const key in order.cart_items) {
+        const item = order.cart_items[key];
+        const itemTotal = item.price * item.quantity;
+        subtotal += itemTotal;
+        const y = doc.y;
+        doc.text(key.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '), 50, y);
+        doc.text(item.quantity, 300, y, { width: 90, align: 'right' });
+        doc.text(`₹${item.price.toFixed(2)}`, 370, y, { width: 90, align: 'right' });
+        doc.text(`₹${itemTotal.toFixed(2)}`, 0, y, { align: 'right' });
+        doc.moveDown();
+    }
+    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+    doc.moveDown();
+
+    // Summary
+    const summaryTop = doc.y;
+    doc.font('Helvetica');
+    doc.text('Subtotal:', 350, summaryTop, { align: 'right' });
+    doc.text(`₹${subtotal.toFixed(2)}`, 0, summaryTop, { align: 'right' });
+    
+    if (order.discount_amount > 0) {
+        doc.moveDown(0.5);
+        const discountY = doc.y;
+        doc.text('Discount:', 350, discountY, { align: 'right' });
+        doc.text(`- ₹${Number(order.discount_amount).toFixed(2)}`, 0, discountY, { align: 'right' });
+    }
+
+    const shippingCost = Number(order.order_amount) - (subtotal - Number(order.discount_amount));
+    doc.moveDown(0.5);
+    const shippingY = doc.y;
+    doc.text('Shipping:', 350, shippingY, { align: 'right' });
+    doc.text(`₹${shippingCost.toFixed(2)}`, 0, shippingY, { align: 'right' });
+
+    doc.moveDown();
+    doc.font('Helvetica-Bold');
+    const totalY = doc.y;
+    doc.text('Grand Total:', 350, totalY, { align: 'right' });
+    doc.text(`₹${Number(order.order_amount).toFixed(2)}`, 0, totalY, { align: 'right' });
+    doc.moveDown(2);
+
+    // Payment Status Logic
+    const isCOD = order.razorpay_payment_id.startsWith('cod_');
+    doc.font('Helvetica-Bold').fontSize(12);
+    if (isCOD) {
+        doc.text('Payment Status: Cash on Delivery (COD)', { align: 'left' });
+        doc.text(`Amount to be Paid on Delivery: ₹${Number(order.order_amount).toFixed(2)}`, { align: 'left' });
+    } else {
+        doc.text('Payment Status: PAID', { align: 'left' });
+        doc.text(`Payment ID: ${order.razorpay_payment_id}`, { align: 'left' });
+    }
+
+    doc.end();
+}
+// END: NEW INVOICE PDF GENERATION FUNCTION
+
+// START: MODIFIED EMAIL FUNCTION TO INCLUDE ATTACHMENTS
+async function sendOrderConfirmationEmail(customerEmail, customerName, order, attachmentPdf) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-    const itemsHtml = Object.keys(cart).map(name => {
-        const item = cart[name];
-        const displayName = name.charAt(0).toUpperCase() + name.slice(1);
-        return `<tr><td style="padding: 10px; border-bottom: 1px solid #ddd;">${displayName} (x${item.quantity})</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">₹${(item.price * item.quantity).toFixed(2)}</td></tr>`;
-    }).join('');
-    const discountHtml = discount > 0 ? `<tr><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right; color: green;">Discount:</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right; color: green;">- ₹${discount.toFixed(2)}</td></tr>` : '';
-    const emailHtml = `
-      <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
-        <h1 style="color: #F97316; text-align: center;">Thank You For Your Order!</h1><p>Hi ${he.encode(customerName)},</p><p>We've received your order and will process it shortly. Here are the details:</p>
-        <div style="border: 1px solid #eee; padding: 15px; margin: 20px 0;"><h2 style="margin-top: 0;">Invoice #${order.id}</h2><p><strong>Order Date:</strong> ${orderDate}</p>
-          <table style="width: 100%; border-collapse: collapse;">
-            <thead><tr><th style="padding: 10px; border-bottom: 2px solid #ddd; text-align: left;">Item</th><th style="padding: 10px; border-bottom: 2px solid #ddd; text-align: right;">Price</th></tr></thead>
-            <tbody>${itemsHtml}<tr><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">Subtotal:</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">₹${subtotal.toFixed(2)}</td></tr>${discountHtml}<tr><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">Shipping:</td><td style="padding: 10px; border-bottom: 1px solid #ddd; text-align: right;">₹${shippingCost.toFixed(2)}</td></tr><tr><td style="padding: 10px; font-weight: bold; text-align: right;">Total:</td><td style="padding: 10px; font-weight: bold; text-align: right;">₹${total.toFixed(2)}</td></tr></tbody>
-          </table>
-        </div><p style="font-size: 12px; color: #777; text-align: center;">This is an automated mail, please do not reply. For any questions, contact us at <a href="mailto:thebiharimakhana@gmail.com">thebiharimakhana@gmail.com</a>.</p>
-      </div>`;
-    const msg = { to: customerEmail, from: 'thebiharimakhana@gmail.com', subject: `Your The Bihari Makhana Order #${order.id} is Confirmed!`, html: emailHtml };
+    
+    const msg = { 
+        to: customerEmail, 
+        from: 'thebiharimakhana@gmail.com', 
+        subject: `Your The Bihari Makhana Order #${order.id} is Confirmed!`, 
+        html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
+                <h1 style="color: #F97316; text-align: center;">Thank You For Your Order!</h1>
+                <p>Hi ${he.encode(customerName)},</p>
+                <p>We've received your order and will process it shortly. Your invoice is attached to this email.</p>
+                <p><strong>Order ID:</strong> #${order.id}</p>
+                <p><strong>Order Date:</strong> ${orderDate}</p>
+                <p style="font-size: 12px; color: #777; text-align: center;">For any questions, contact us at <a href="mailto:thebiharimakhana@gmail.com">thebiharimakhana@gmail.com</a>.</p>
+            </div>`,
+        attachments: [{
+            content: attachmentPdf.toString('base64'),
+            filename: `invoice-${order.id}.pdf`,
+            type: 'application/pdf',
+            disposition: 'attachment'
+        }]
+    };
     try {
         await sgMail.send(msg);
-        console.log('Confirmation email sent to', customerEmail);
+        console.log('Confirmation email with invoice sent to', customerEmail);
     } catch (error) {
-        console.error('Error sending confirmation email:', error);
+        console.error('Error sending confirmation email:', error.response.body);
     }
 }
+// END: MODIFIED EMAIL FUNCTION
+
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -368,7 +474,7 @@ app.post('/checkout', verifyToken, async (req, res) => {
         const totalAmount = subtotal - discount + shippingCost;
         const query = `
             INSERT INTO orders (customer_name, phone_number, address, cart_items, order_amount, user_uid, razorpay_payment_id, coupon_used, discount_amount)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *
         `;
         const values = [
             addressDetails.name, addressDetails.phone, addressDetails.address, 
@@ -377,7 +483,11 @@ app.post('/checkout', verifyToken, async (req, res) => {
         ];
         const orderResult = await pool.query(query, values);
         const newOrder = orderResult.rows[0];
-        await sendOrderConfirmationEmail(user.email, addressDetails.name, newOrder, cart, subtotal, shippingCost, totalAmount, discount);
+
+        generateInvoicePdf(newOrder, (pdfData) => {
+            sendOrderConfirmationEmail(user.email, addressDetails.name, newOrder, pdfData);
+        });
+        
         res.json({ success: true, message: 'Order placed successfully!' });
     } catch (err) {
         console.error('Error during checkout:', err);
@@ -565,6 +675,34 @@ app.get('/api/active-coupons', async (req, res) => {
     } catch (err) {
         console.error("Error fetching active coupons:", err);
         res.status(500).json([]);
+    }
+});
+
+app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { uid } = req.user;
+
+        const { rows } = await pool.query(
+            'SELECT * FROM orders WHERE id = $1 AND user_uid = $2',
+            [orderId, uid]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).send('Order not found or you do not have permission to view it.');
+        }
+
+        const order = rows[0];
+        
+        generateInvoicePdf(order, (pdfData) => {
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="invoice-${order.id}.pdf"`);
+            res.send(pdfData);
+        });
+
+    } catch (err) {
+        console.error('Error generating invoice:', err);
+        res.status(500).send('Error generating invoice.');
     }
 });
 
@@ -780,7 +918,6 @@ app.post('/admin/delete-product/:id', checkAdminAuth, async (req, res) => {
     } catch (err) { res.status(500).send('Error deleting product.'); }
 });
 
-// START: MODIFIED USERS ROUTE
 app.get('/admin/users', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at FROM users ORDER BY created_at DESC');
@@ -816,9 +953,7 @@ app.get('/admin/users', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error loading users page.');
     }
 });
-// END: MODIFIED USERS ROUTE
 
-// START: NEW ROUTES FOR USER DELETION
 app.post('/admin/soft-delete-user/:uid', checkAdminAuth, async (req, res) => {
     try {
         const { uid } = req.params;
@@ -854,9 +989,7 @@ app.post('/admin/permanent-delete-user/:uid', checkAdminAuth, async (req, res) =
         res.status(500).send('Error permanently deleting user.');
     }
 });
-// END: NEW ROUTES FOR USER DELETION
 
-// START: MODIFIED ORDERS ROUTE
 app.get('/admin/orders', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
@@ -894,7 +1027,6 @@ app.get('/admin/orders', checkAdminAuth, async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
-// END: MODIFIED ORDERS ROUTE
 
 app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
     const { id } = req.params;
@@ -912,7 +1044,6 @@ app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
     } catch (err) { res.status(500).send('Error updating order status.'); }
 });
 
-// START: NEW ROUTE FOR ORDER DELETION
 app.post('/admin/delete-order/:id', checkAdminAuth, async (req, res) => {
     try {
         const { id } = req.params;
@@ -924,7 +1055,6 @@ app.post('/admin/delete-order/:id', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error deleting order.');
     }
 });
-// END: NEW ROUTE FOR ORDER DELETION
 
 app.get('/admin/coupons', checkAdminAuth, async (req, res) => {
     try {
