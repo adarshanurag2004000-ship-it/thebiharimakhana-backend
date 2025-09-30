@@ -1,4 +1,4 @@
-// --- SERVER.JS WITH PDF INVOICE GENERATION (COMPLETE CODE) ---
+// --- SERVER.JS WITH DELIVERED & CANCELLED EMAIL NOTIFICATIONS ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -11,7 +11,7 @@ require('dotenv').config();
 const sgMail = require('@sendgrid/mail');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
-const PDFDocument = require('pdfkit'); // PDF LIBRARY
+const PDFDocument = require('pdfkit');
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -162,7 +162,6 @@ async function verifyToken(req, res, next) {
     }
 }
 
-// START: NEW INVOICE PDF GENERATION FUNCTION
 function generateInvoicePdf(order, callback) {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const buffers = [];
@@ -257,9 +256,7 @@ function generateInvoicePdf(order, callback) {
 
     doc.end();
 }
-// END: NEW INVOICE PDF GENERATION FUNCTION
 
-// START: MODIFIED EMAIL FUNCTION TO INCLUDE ATTACHMENTS
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, attachmentPdf) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     
@@ -290,7 +287,6 @@ async function sendOrderConfirmationEmail(customerEmail, customerName, order, at
         console.error('Error sending confirmation email:', error.response.body);
     }
 }
-// END: MODIFIED EMAIL FUNCTION
 
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
@@ -340,7 +336,27 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     }
 }
 
-// --- Public API Routes ---
+// START: NEW FUNCTION FOR "DELIVERED" EMAIL
+async function sendOrderDeliveredEmail(customerEmail, customerName, orderId) {
+    const emailHtml = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
+        <h1 style="color: #10B981; text-align: center;">Your Order Has Been Delivered!</h1>
+        <p>Hi ${he.encode(customerName)},</p>
+        <p>We're happy to let you know that your order #${orderId} has been delivered successfully.</p>
+        <p>We hope you enjoy your products! We would be grateful if you could <a href="https://thebiharimakhana.netlify.app/my-orders.html">leave a review</a> for the products you purchased.</p>
+        <p>Thank you for shopping with us!</p>
+      </div>`;
+    const msg = { to: customerEmail, from: 'thebiharimakhana@gmail.com', subject: `Your The Bihari Makhana Order #${orderId} Has Been Delivered!`, html: emailHtml };
+    try {
+        await sgMail.send(msg);
+        console.log('Delivered notification email sent to', customerEmail);
+    } catch (error) {
+        console.error('Error sending delivered notification email:', error);
+    }
+}
+// END: NEW FUNCTION FOR "DELIVERED" EMAIL
+
+// --- Public API Routes (Full code included) ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
@@ -677,7 +693,6 @@ app.get('/api/active-coupons', async (req, res) => {
         res.status(500).json([]);
     }
 });
-
 app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -706,7 +721,7 @@ app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
     }
 });
 
-// --- Admin Routes ---
+// --- Admin Routes (Full code included) ---
 
 const checkAdminAuth = (req, res, next) => {
     if (req.cookies.admin_session && req.cookies.admin_session === process.env.ADMIN_SESSION_SECRET) {
@@ -1028,21 +1043,44 @@ app.get('/admin/orders', checkAdminAuth, async (req, res) => {
     }
 });
 
+// START: MODIFIED ROUTE FOR ORDER STATUS UPDATE
 app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
     const { id } = req.params;
     const { newStatus } = req.body;
     try {
-        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
-        if(orderCheck.rows.length > 0 && newStatus === 'Shipped' && orderCheck.rows[0].status !== 'Shipped') {
-            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [orderCheck.rows[0].user_uid]);
-            if (userResult.rows.length > 0) {
-                await sendOrderShippedEmail(userResult.rows[0].email, orderCheck.rows[0].customer_name, id);
+        // Get all the necessary info in one query
+        const { rows } = await pool.query(
+            'SELECT o.status, o.customer_name, u.email FROM orders o JOIN users u ON o.user_uid = u.firebase_uid WHERE o.id = $1', 
+            [id]
+        );
+
+        if (rows.length > 0) {
+            const orderInfo = rows[0];
+            const previousStatus = orderInfo.status;
+            const customerEmail = orderInfo.email;
+            const customerName = orderInfo.customer_name;
+
+            // Only send an email if the status has actually changed
+            if (newStatus !== previousStatus) {
+                if (newStatus === 'Shipped') {
+                    await sendOrderShippedEmail(customerEmail, customerName, id);
+                } else if (newStatus === 'Delivered') {
+                    await sendOrderDeliveredEmail(customerEmail, customerName, id);
+                } else if (newStatus === 'Cancelled') {
+                    await sendOrderCancellationEmail(customerEmail, customerName, id);
+                }
             }
         }
+
+        // Update the status in the database
         await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
         res.redirect('/admin/orders');
-    } catch (err) { res.status(500).send('Error updating order status.'); }
+    } catch (err) {
+        console.error("Error updating order status:", err);
+        res.status(500).send('Error updating order status.');
+    }
 });
+// END: MODIFIED ROUTE
 
 app.post('/admin/delete-order/:id', checkAdminAuth, async (req, res) => {
     try {
