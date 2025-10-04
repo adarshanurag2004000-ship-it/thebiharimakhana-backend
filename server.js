@@ -143,7 +143,6 @@ async function setupDatabase() {
         `);
         console.log('INFO: "addresses" table is ready.');
         
-        // START: NEW SITE_SETTINGS TABLE
         await client.query(`
             CREATE TABLE IF NOT EXISTS site_settings (
                 setting_key VARCHAR(255) PRIMARY KEY,
@@ -152,17 +151,19 @@ async function setupDatabase() {
         `);
         console.log('INFO: "site_settings" table is ready.');
         
-        // Insert default values only if they don't exist
+        // START: ADD NEW THEME SETTINGS TO DATABASE
         await client.query(`
             INSERT INTO site_settings (setting_key, setting_value)
             VALUES 
                 ('homepage_headline', 'Authentic Makhana from the Heart of Bihar'),
                 ('homepage_subheadline', 'Experience the crunchy, healthy, and delicious superfood, delivered right to your doorstep.'),
-                ('banner_text', 'Free Shipping on All Orders Above ₹500!')
+                ('banner_text', 'Free Shipping on All Orders Above ₹500!'),
+                ('primary_color', '#F97316'),
+                ('body_font', 'Inter')
             ON CONFLICT (setting_key) DO NOTHING;
         `);
         console.log('INFO: Default site settings are populated.');
-        // END: NEW SITE_SETTINGS TABLE
+        // END: ADD NEW THEME SETTINGS TO DATABASE
 
     } catch (err) {
         console.error('Error during database setup:', err);
@@ -358,7 +359,6 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     }
 }
 
-// START: NEW FUNCTION FOR "DELIVERED" EMAIL
 async function sendOrderDeliveredEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -376,7 +376,6 @@ async function sendOrderDeliveredEmail(customerEmail, customerName, orderId) {
         console.error('Error sending delivered notification email:', error);
     }
 }
-// END: NEW FUNCTION FOR "DELIVERED" EMAIL
 
 // --- Public API Routes (Full code included) ---
 app.get('/', async (req, res) => {
@@ -437,7 +436,6 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
-// START: NEW PUBLIC ENDPOINT FOR SITE SETTINGS
 app.get('/api/site-settings', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
@@ -451,7 +449,6 @@ app.get('/api/site-settings', async (req, res) => {
         res.status(500).json({ error: 'Could not fetch site settings.' });
     }
 });
-// END: NEW PUBLIC ENDPOINT FOR SITE SETTINGS
 
 app.get('/api/featured-products', async (req, res) => {
     try {
@@ -786,7 +783,8 @@ const getAdminHeaderHTML = (currentPageTitle) => {
             .add-form { margin-top: 2em; padding: 1.5em; border: 1px solid #ddd; background-color: white; }
             .logout-btn { background-color: #f44336; color: white; padding: 0.5em 1em; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; }
             .form-group{margin-bottom:1em;} label{display:block;margin-bottom:0.5em;} input, select, textarea, button{padding:8px; width: 100%; box-sizing: border-box;}
-            button, .button-style { padding: 8px; border: none; cursor: pointer; border-radius: 4px; }
+            input[type="color"] { padding: 0; height: 40px; }
+            button, .button-style { padding: 10px 15px; border: none; cursor: pointer; border-radius: 4px; font-size: 16px;}
             .soft-delete-btn { background-color: #f0ad4e; color: white; }
             .permanent-delete-btn { background-color: #d9534f; color: white; }
         </style>
@@ -1083,12 +1081,10 @@ app.get('/admin/orders', checkAdminAuth, async (req, res) => {
     }
 });
 
-// START: MODIFIED ROUTE FOR ORDER STATUS UPDATE
 app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
     const { id } = req.params;
     const { newStatus } = req.body;
     try {
-        // Get all the necessary info in one query
         const { rows } = await pool.query(
             'SELECT o.status, o.customer_name, u.email FROM orders o JOIN users u ON o.user_uid = u.firebase_uid WHERE o.id = $1', 
             [id]
@@ -1100,7 +1096,6 @@ app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
             const customerEmail = orderInfo.email;
             const customerName = orderInfo.customer_name;
 
-            // Only send an email if the status has actually changed
             if (newStatus !== previousStatus) {
                 if (newStatus === 'Shipped') {
                     await sendOrderShippedEmail(customerEmail, customerName, id);
@@ -1112,7 +1107,6 @@ app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
             }
         }
 
-        // Update the status in the database
         await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
         res.redirect('/admin/orders');
     } catch (err) {
@@ -1120,7 +1114,6 @@ app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error updating order status.');
     }
 });
-// END: MODIFIED ROUTE
 
 app.post('/admin/delete-order/:id', checkAdminAuth, async (req, res) => {
     try {
@@ -1230,7 +1223,7 @@ app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => {
     }
 });
 
-// START: NEW ADMIN ROUTES FOR SITE SETTINGS
+// START: MODIFIED ADMIN ROUTES FOR SITE SETTINGS
 app.get('/admin/settings', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
@@ -1239,13 +1232,19 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
             return acc;
         }, {});
 
+        const fonts = ['Inter', 'Poppins', 'Roboto', 'Merriweather'];
+        const fontOptions = fonts.map(font => 
+            `<option value="${font}" ${settings.body_font === font ? 'selected' : ''}>${font}</option>`
+        ).join('');
+
         const header = getAdminHeaderHTML('Site Settings');
         res.send(`
             ${header}
-            <h1>Edit Site Content</h1>
+            <h1>Edit Site Content & Theme</h1>
             <p>Changes made here will be reflected on your live website immediately.</p>
             <div class="add-form">
                 <form action="/admin/settings" method="POST">
+                    <h2>Content</h2>
                     <div class="form-group">
                         <label for="homepage_headline">Homepage Main Headline:</label>
                         <input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}">
@@ -1258,7 +1257,17 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
                         <label for="banner_text">Scrolling Banner Text (Top Bar):</label>
                         <input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}">
                     </div>
-                    <button type="submit" style="background-color: #28a745; color: white;">Save Settings</button>
+                    <hr style="margin: 2em 0;">
+                    <h2>Theme</h2>
+                    <div class="form-group">
+                        <label for="primary_color">Primary Color (for buttons, links, etc.):</label>
+                        <input type="color" id="primary_color" name="primary_color" value="${he.encode(settings.primary_color || '#F97316')}">
+                    </div>
+                     <div class="form-group">
+                        <label for="body_font">Main Website Font:</label>
+                        <select id="body_font" name="body_font">${fontOptions}</select>
+                    </div>
+                    <button type="submit" style="background-color: #28a745; color: white;">Save All Settings</button>
                 </form>
             </div>
             </div></body></html>
@@ -1271,24 +1280,21 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
 
 app.post('/admin/settings', checkAdminAuth, async (req, res) => {
     try {
-        const { homepage_headline, homepage_subheadline, banner_text } = req.body;
+        const { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font } = req.body;
         
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-            
-            await client.query(
-                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('homepage_headline', $1)
-                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [homepage_headline]
-            );
-            await client.query(
-                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('homepage_subheadline', $1)
-                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [homepage_subheadline]
-            );
-            await client.query(
-                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('banner_text', $1)
-                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [banner_text]
-            );
+            const settingsToUpdate = {
+                homepage_headline, homepage_subheadline, banner_text, primary_color, body_font
+            };
+
+            for (const key in settingsToUpdate) {
+                await client.query(
+                    `INSERT INTO site_settings (setting_key, setting_value) VALUES ($1, $2)
+                     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`, [key, settingsToUpdate[key]]
+                );
+            }
             
             await client.query('COMMIT');
         } catch (e) {
@@ -1304,7 +1310,7 @@ app.post('/admin/settings', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error saving settings.');
     }
 });
-// END: NEW ADMIN ROUTES FOR SITE SETTINGS
+// END: MODIFIED ADMIN ROUTES FOR SITE SETTINGS
 
 
 app.use((err, req, res, next) => {
