@@ -72,7 +72,6 @@ async function setupDatabase() {
         `);
         console.log('INFO: "products" table schema is up to date.');
         
-        console.log('INFO: Checking if "category" column exists in "products" table...');
         const checkColumnResult = await client.query(`
             SELECT 1 FROM information_schema.columns
             WHERE table_name = 'products' AND column_name = 'category'
@@ -159,6 +158,7 @@ async function setupDatabase() {
         `);
         console.log('INFO: "site_settings" table is ready.');
         
+        // START: ADD NEW CONTACT INFO SETTINGS TO DATABASE
         await client.query(`
             INSERT INTO site_settings (setting_key, setting_value)
             VALUES 
@@ -169,10 +169,14 @@ async function setupDatabase() {
                 ('body_font', 'Inter'),
                 ('about_us_content', 'Bihari Makhana celebrates the rich heritage of Mithila, Bihar, a region renowned for producing over 90% of the world''s Fox Nuts. Our makhana is ethically sourced from local farmers who use traditional harvesting methods passed down through generations.\n\nWe are committed to delivering not just a snack, but a piece of our culture. Each kernel is carefully selected and roasted to perfection, ensuring a crunchy, guilt-free delight that''s as nutritious as it is delicious.'),
                 ('policies_shipping', 'We ship all orders within 3-5 business days. Shipping is free on all orders above ₹500. For all other orders, a flat rate of ₹99 will be charged.'),
-                ('policies_returns', 'Due to the nature of our products, we do not accept returns. However, if your order arrives damaged, please contact us at thebiharimakhana@gmail.com within 48 hours with a video of opening the package , and we will be happy to assist you.')
+                ('policies_returns', 'Due to the nature of our products, we do not accept returns. However, if your order arrives damaged, please contact us at thebiharimakhana@gmail.com within 48 hours with a video of opening the package , and we will be happy to assist you.'),
+                ('contact_email', 'thebiharimakhana@gmail.com'),
+                ('contact_phone', '+91 7295901346'),
+                ('contact_address', 'Bhagalpur, Bihar, India')
             ON CONFLICT (setting_key) DO NOTHING;
         `);
         console.log('INFO: Default site settings are populated.');
+        // END: ADD NEW CONTACT INFO SETTINGS TO DATABASE
 
     } catch (err) {
         console.error('Error during database setup:', err);
@@ -774,6 +778,7 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
                     <option value="theme">Theme & Fonts</option>
                     <option value="about">About Us Page</option>
                     <option value="policies">Policies Page</option>
+                    <option value="contact">Contact Page</option>
                 </select>
             </div>
             <form action="/admin/settings" method="POST" class="add-form">
@@ -797,6 +802,12 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
                     <div class="form-group"><label for="policies_shipping">Shipping Policy:</label><textarea id="policies_shipping" name="policies_shipping" rows="5">${he.encode(settings.policies_shipping || '')}</textarea></div>
                     <div class="form-group"><label for="policies_returns">Return & Refund Policy:</label><textarea id="policies_returns" name="policies_returns" rows="5">${he.encode(settings.policies_returns || '')}</textarea></div>
                 </div>
+                <div id="contact-section" style="display: none;">
+                    <h2>Contact Page Information</h2>
+                    <div class="form-group"><label for="contact_email">Email:</label><input type="email" id="contact_email" name="contact_email" value="${he.encode(settings.contact_email || '')}"></div>
+                    <div class="form-group"><label for="contact_phone">Phone:</label><input type="text" id="contact_phone" name="contact_phone" value="${he.encode(settings.contact_phone || '')}"></div>
+                    <div class="form-group"><label for="contact_address">Address:</label><input type="text" id="contact_address" name="contact_address" value="${he.encode(settings.contact_address || '')}"></div>
+                </div>
                 <hr style="margin: 2em 0;"><button type="submit" style="background-color: #28a745; color: white;">Save All Settings</button>
             </form>
             <script>
@@ -806,7 +817,8 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
                         content: document.getElementById('content-section'),
                         theme: document.getElementById('theme-section'),
                         about: document.getElementById('about-section'),
-                        policies: document.getElementById('policies-section')
+                        policies: document.getElementById('policies-section'),
+                        contact: document.getElementById('contact-section')
                     };
                     function showSection(sectionId) {
                         for (const key in sections) { if(sections[key]) { sections[key].style.display = 'none'; } }
@@ -823,11 +835,11 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
 
 app.post('/admin/settings', checkAdminAuth, async (req, res) => {
     try {
-        const { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns } = req.body;
+        const { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns, contact_email, contact_phone, contact_address } = req.body;
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-            const settingsToUpdate = { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns };
+            const settingsToUpdate = { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns, contact_email, contact_phone, contact_address };
             for (const key in settingsToUpdate) {
                  if (settingsToUpdate[key] !== undefined) {
                     await client.query(`INSERT INTO site_settings (setting_key, setting_value) VALUES ($1, $2) ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`, [key, settingsToUpdate[key]]);
