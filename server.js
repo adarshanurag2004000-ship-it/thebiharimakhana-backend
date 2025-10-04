@@ -142,6 +142,28 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "addresses" table is ready.');
+        
+        // START: NEW SITE_SETTINGS TABLE
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS site_settings (
+                setting_key VARCHAR(255) PRIMARY KEY,
+                setting_value TEXT
+            );
+        `);
+        console.log('INFO: "site_settings" table is ready.');
+        
+        // Insert default values only if they don't exist
+        await client.query(`
+            INSERT INTO site_settings (setting_key, setting_value)
+            VALUES 
+                ('homepage_headline', 'Authentic Makhana from the Heart of Bihar'),
+                ('homepage_subheadline', 'Experience the crunchy, healthy, and delicious superfood, delivered right to your doorstep.'),
+                ('banner_text', 'Free Shipping on All Orders Above ₹500!')
+            ON CONFLICT (setting_key) DO NOTHING;
+        `);
+        console.log('INFO: Default site settings are populated.');
+        // END: NEW SITE_SETTINGS TABLE
+
     } catch (err) {
         console.error('Error during database setup:', err);
     } finally {
@@ -414,6 +436,23 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
+
+// START: NEW PUBLIC ENDPOINT FOR SITE SETTINGS
+app.get('/api/site-settings', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
+        const settings = rows.reduce((acc, row) => {
+            acc[row.setting_key] = row.setting_value;
+            return acc;
+        }, {});
+        res.json(settings);
+    } catch (err) {
+        console.error('Error fetching site settings:', err);
+        res.status(500).json({ error: 'Could not fetch site settings.' });
+    }
+});
+// END: NEW PUBLIC ENDPOINT FOR SITE SETTINGS
+
 app.get('/api/featured-products', async (req, res) => {
     try {
         const { rows } = await pool.query(
@@ -760,6 +799,7 @@ const getAdminHeaderHTML = (currentPageTitle) => {
                 <a href="/admin/users">Users</a>
                 <a href="/admin/coupons">Coupons</a>
                 <a href="/admin/reviews">Reviews</a>
+                <a href="/admin/settings">Site Settings</a>
             </div>
             <div>
                 <a href="/admin/logout" class="logout-btn">Logout</a>
@@ -1189,6 +1229,82 @@ app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error blocking user.');
     }
 });
+
+// START: NEW ADMIN ROUTES FOR SITE SETTINGS
+app.get('/admin/settings', checkAdminAuth, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
+        const settings = rows.reduce((acc, row) => {
+            acc[row.setting_key] = row.setting_value;
+            return acc;
+        }, {});
+
+        const header = getAdminHeaderHTML('Site Settings');
+        res.send(`
+            ${header}
+            <h1>Edit Site Content</h1>
+            <p>Changes made here will be reflected on your live website immediately.</p>
+            <div class="add-form">
+                <form action="/admin/settings" method="POST">
+                    <div class="form-group">
+                        <label for="homepage_headline">Homepage Main Headline:</label>
+                        <input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label for="homepage_subheadline">Homepage Sub-Headline:</label>
+                        <textarea id="homepage_subheadline" name="homepage_subheadline" rows="3">${he.encode(settings.homepage_subheadline || '')}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="banner_text">Scrolling Banner Text (Top Bar):</label>
+                        <input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}">
+                    </div>
+                    <button type="submit" style="background-color: #28a745; color: white;">Save Settings</button>
+                </form>
+            </div>
+            </div></body></html>
+        `);
+    } catch (err) {
+        console.error("Error loading settings page:", err);
+        res.status(500).send('Error loading settings page.');
+    }
+});
+
+app.post('/admin/settings', checkAdminAuth, async (req, res) => {
+    try {
+        const { homepage_headline, homepage_subheadline, banner_text } = req.body;
+        
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            
+            await client.query(
+                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('homepage_headline', $1)
+                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [homepage_headline]
+            );
+            await client.query(
+                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('homepage_subheadline', $1)
+                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [homepage_subheadline]
+            );
+            await client.query(
+                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('banner_text', $1)
+                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [banner_text]
+            );
+            
+            await client.query('COMMIT');
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+
+        res.redirect('/admin/settings');
+    } catch (err) {
+        console.error("Error saving site settings:", err);
+        res.status(500).send('Error saving settings.');
+    }
+});
+// END: NEW ADMIN ROUTES FOR SITE SETTINGS
 
 
 app.use((err, req, res, next) => {
