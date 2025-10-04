@@ -409,6 +409,27 @@ app.get('/api/featured-products', async (req, res) => {
         res.status(500).send('Error fetching featured products');
     }
 });
+
+// ********** NEW CODE BLOCK STARTS HERE **********
+app.get('/api/product/:productId', async (req, res) => {
+    try {
+        const { productId } = req.params;
+        // This query finds the product by the hyphenated name used in the URL
+        const query = "SELECT * FROM products WHERE lower(replace(name, ' ', '-')) = $1 AND stock_quantity > 0";
+        const { rows } = await pool.query(query, [productId]);
+        
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Product not found.' });
+        }
+        
+        res.json(rows[0]); // Return only the single product object found
+    } catch (err) {
+        console.error('Error fetching single product:', err);
+        res.status(500).send('Error fetching product details');
+    }
+});
+// ********** NEW CODE BLOCK ENDS HERE **********
+
 app.post('/api/apply-coupon', async (req, res) => {
     const { cart, couponCode } = req.body;
     if (!cart || Object.keys(cart).length === 0) {
