@@ -43,7 +43,9 @@ const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 150,
 });
-app.use(limiter);
+
+// The line below is now commented out to disable the rate limit during development
+// app.use(limiter);
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -93,7 +95,8 @@ async function setupDatabase() {
                 ('contact_email', 'thebiharimakhana@gmail.com'),
                 ('contact_phone', '+91 7295901346'),
                 ('contact_address', 'Bhagalpur, Bihar, India'),
-                ('homepage_bg_image', '')
+                ('homepage_bg_image', ''),
+                ('featured_products_title', 'Our Featured Flavors')
             ON CONFLICT (setting_key) DO NOTHING;
         `);
         console.log('INFO: Default site settings are populated.');
@@ -285,6 +288,26 @@ app.get('/api/products', async (req, res) => {
         res.json(rows);
     } catch (err) { console.error('Error fetching products:', err); res.status(500).send('Error fetching products'); }
 });
+
+// --- NEW --- Endpoint to get a single product by its slug-like ID
+app.get('/api/products/:productId', async (req, res) => {
+    try {
+        const { productId } = req.params;
+        // This query finds the product by matching the slugified name format used in the frontend
+        const query = "SELECT * FROM products WHERE REPLACE(LOWER(name), ' ', '-') = $1";
+        const { rows } = await pool.query(query, [productId]);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'Product not found.' });
+        }
+        res.json(rows[0]); // Return the single product object
+    } catch (err) {
+        console.error('Error fetching single product:', err);
+        res.status(500).send('Error fetching product');
+    }
+});
+
+
 app.get('/api/site-settings', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
@@ -559,8 +582,171 @@ app.post('/admin/delete-coupon/:id', checkAdminAuth, async (req, res) => { try {
 app.get('/admin/reviews', checkAdminAuth, async (req, res) => { try { const { rows } = await pool.query('SELECT r.id, r.product_name, r.rating, r.review_text, r.reviewer_name, r.user_uid, u.email FROM reviews r JOIN users u ON r.user_uid = u.firebase_uid ORDER BY r.created_at DESC'); const reviewsHtml = rows.map(r => `<tr><td>${r.id}</td><td>${he.encode(r.product_name)}</td><td>${he.encode(r.reviewer_name)}<br>(${he.encode(r.email)})</td><td>${'⭐'.repeat(r.rating)}</td><td>${he.encode(r.review_text || '')}</td><td><form action="/admin/delete-review/${r.id}" method="POST" style="display:inline-block; margin-bottom: 5px;"><button type="submit" onclick="return confirm('Delete review?');">Delete Review</button></form><form action="/admin/block-user/${r.user_uid}" method="POST" style="display:inline-block;"><button type="submit" onclick="return confirm('Block this user from leaving reviews?');">Block User</button></form></td></tr>`).join(''); const header = getAdminHeaderHTML('Manage Reviews'); res.send(`${header}<h1>Manage Reviews</h1><table><thead><tr><th>ID</th><th>Product</th><th>Reviewer</th><th>Rating</th><th>Review Text</th><th>Actions</th></tr></thead><tbody>${reviewsHtml}</tbody></table></div></body></html>`); } catch (err) { res.status(500).send('Error loading reviews management page.'); } });
 app.post('/admin/delete-review/:id', checkAdminAuth, async (req, res) => { try { await pool.query('DELETE FROM reviews WHERE id = $1', [req.params.id]); res.redirect('/admin/reviews'); } catch (err) { res.status(500).send('Error deleting review.'); } });
 app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => { try { await pool.query('UPDATE users SET is_blocked_from_reviewing = TRUE WHERE firebase_uid = $1', [req.params.uid]); res.redirect('/admin/reviews'); } catch (err) { res.status(500).send('Error blocking user.'); } });
-app.get('/admin/settings', checkAdminAuth, async (req, res) => { try { const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings'); const settings = rows.reduce((acc, row) => { acc[row.setting_key] = row.setting_value; return acc; }, {}); const fonts = ['Inter', 'Poppins', 'Roboto', 'Merriweather']; const fontOptions = fonts.map(font => `<option value="${font}" ${settings.body_font === font ? 'selected' : ''}>${font}</option>`).join(''); const header = getAdminHeaderHTML('Site Settings'); res.send(`${header}<h1>Edit Site Content & Theme</h1><p>Changes made here will be reflected on your live website immediately.</p><div class="form-group"><label for="section-selector">Choose a section to edit:</label><select id="section-selector"><option value="content">Homepage & Banner</option><option value="theme">Theme & Fonts</option><option value="about">About Us Page</option><option value="policies">Policies Page</option><option value="contact">Contact Page</option></select></div><form action="/admin/settings" method="POST" class="add-form"><div id="content-section" style="display: none;"><h2>Homepage & Banner Content</h2><div class="form-group"><label for="homepage_headline">Homepage Main Headline:</label><input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}"></div><div class="form-group"><label for="homepage_subheadline">Homepage Sub-Headline:</label><textarea id="homepage_subheadline" name="homepage_subheadline" rows="3">${he.encode(settings.homepage_subheadline || '')}</textarea></div><div class="form-group"><label for="banner_text">Scrolling Banner Text (Top Bar):</label><input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}"></div><div class="form-group"><label for="homepage_bg_image">Homepage Background Image URL:</label><input type="text" id="homepage_bg_image" name="homepage_bg_image" value="${he.encode(settings.homepage_bg_image || '')}" placeholder="Leave blank to use theme color"></div></div><div id="theme-section" style="display: none;"><h2>Theme & Fonts</h2><div class="form-group"><label for="primary_color">Primary Color:</label><input type="color" id="primary_color" name="primary_color" value="${he.encode(settings.primary_color || '#F97316')}"></div><div class="form-group"><label for="body_font">Main Website Font:</label><select id="body_font" name="body_font">${fontOptions}</select></div></div><div id="about-section" style="display: none;"><h2>About Us Page Content</h2><div class="form-group"><label for="about_us_content">Content:</label><textarea id="about_us_content" name="about_us_content" rows="10">${he.encode(settings.about_us_content || '')}</textarea></div></div><div id="policies-section" style="display: none;"><h2>Policies Page Content</h2><div class="form-group"><label for="policies_shipping">Shipping Policy:</label><textarea id="policies_shipping" name="policies_shipping" rows="5">${he.encode(settings.policies_shipping || '')}</textarea></div><div class="form-group"><label for="policies_returns">Return & Refund Policy:</label><textarea id="policies_returns" name="policies_returns" rows="5">${he.encode(settings.policies_returns || '')}</textarea></div></div><div id="contact-section" style="display: none;"><h2>Contact Page Information</h2><div class="form-group"><label for="contact_email">Email:</label><input type="email" id="contact_email" name="contact_email" value="${he.encode(settings.contact_email || '')}"></div><div class="form-group"><label for="contact_phone">Phone:</label><input type="text" id="contact_phone" name="contact_phone" value="${he.encode(settings.contact_phone || '')}"></div><div class="form-group"><label for="contact_address">Address:</label><input type="text" id="contact_address" name="contact_address" value="${he.encode(settings.contact_address || '')}"></div></div><hr style="margin: 2em 0;"><button type="submit" style="background-color: #28a745; color: white;">Save All Settings</button></form><script>document.addEventListener('DOMContentLoaded', function() { const selector = document.getElementById('section-selector'); const sections = { content: document.getElementById('content-section'), theme: document.getElementById('theme-section'), about: document.getElementById('about-section'), policies: document.getElementById('policies-section'), contact: document.getElementById('contact-section') }; function showSection(sectionId) { for (const key in sections) { if(sections[key]) { sections[key].style.display = 'none'; } } if (sections[sectionId]) { sections[sectionId].style.display = 'block'; } } selector.addEventListener('change', function() { showSection(this.value); }); showSection(selector.value); });</script></div></body></html>`); } catch (err) { console.error("Error loading settings page:", err); res.status(500).send('Error loading settings page.'); } });
-app.post('/admin/settings', checkAdminAuth, async (req, res) => { try { const { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns, contact_email, contact_phone, contact_address, homepage_bg_image } = req.body; const client = await pool.connect(); try { await client.query('BEGIN'); const settingsToUpdate = { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns, contact_email, contact_phone, contact_address, homepage_bg_image }; for (const key in settingsToUpdate) { if (settingsToUpdate[key] !== undefined) { await client.query(`INSERT INTO site_settings (setting_key, setting_value) VALUES ($1, $2) ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`, [key, settingsToUpdate[key]]); } } await client.query('COMMIT'); } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); } res.redirect('/admin/settings'); } catch (err) { console.error("Error saving site settings:", err); res.status(500).send('Error saving settings.'); } });
+
+app.get('/admin/settings', checkAdminAuth, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
+        const settings = rows.reduce((acc, row) => {
+            acc[row.setting_key] = row.setting_value;
+            return acc;
+        }, {});
+        const fonts = ['Inter', 'Poppins', 'Roboto', 'Merriweather'];
+        const fontOptions = fonts.map(font => `<option value="${font}" ${settings.body_font === font ? 'selected' : ''}>${font}</option>`).join('');
+        const header = getAdminHeaderHTML('Site Settings');
+        res.send(`
+            ${header}
+            <h1>Edit Site Content & Theme</h1>
+            <p>Changes made here will be reflected on your live website immediately.</p>
+            <div class="form-group">
+                <label for="section-selector">Choose a section to edit:</label>
+                <select id="section-selector">
+                    <option value="content">Homepage & Banner</option>
+                    <option value="theme">Theme & Fonts</option>
+                    <option value="about">About Us Page</option>
+                    <option value="policies">Policies Page</option>
+                    <option value="contact">Contact Page</option>
+                </select>
+            </div>
+            <form action="/admin/settings" method="POST" class="add-form">
+                <div id="content-section" style="display: none;">
+                    <h2>Homepage & Banner Content</h2>
+                    <div class="form-group">
+                        <label for="homepage_headline">Homepage Main Headline:</label>
+                        <input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label for="homepage_subheadline">Homepage Sub-Headline:</label>
+                        <textarea id="homepage_subheadline" name="homepage_subheadline" rows="3">${he.encode(settings.homepage_subheadline || '')}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="featured_products_title">"Featured Products" Section Title:</label>
+                        <input type="text" id="featured_products_title" name="featured_products_title" value="${he.encode(settings.featured_products_title || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label for="banner_text">Scrolling Banner Text (Top Bar):</label>
+                        <input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label for="homepage_bg_image">Homepage Background Image URL:</label>
+                        <input type="text" id="homepage_bg_image" name="homepage_bg_image" value="${he.encode(settings.homepage_bg_image || '')}" placeholder="Leave blank to use theme color">
+                    </div>
+                </div>
+                <div id="theme-section" style="display: none;">
+                    <h2>Theme & Fonts</h2>
+                    <div class="form-group">
+                        <label for="primary_color">Primary Color:</label>
+                        <input type="color" id="primary_color" name="primary_color" value="${he.encode(settings.primary_color || '#F97316')}">
+                    </div>
+                    <div class="form-group">
+                        <label for="body_font">Main Website Font:</label>
+                        <select id="body_font" name="body_font">${fontOptions}</select>
+                    </div>
+                </div>
+                <div id="about-section" style="display: none;">
+                    <h2>About Us Page Content</h2>
+                    <div class="form-group">
+                        <label for="about_us_content">Content:</label>
+                        <textarea id="about_us_content" name="about_us_content" rows="10">${he.encode(settings.about_us_content || '')}</textarea>
+                    </div>
+                </div>
+                <div id="policies-section" style="display: none;">
+                    <h2>Policies Page Content</h2>
+                    <div class="form-group">
+                        <label for="policies_shipping">Shipping Policy:</label>
+                        <textarea id="policies_shipping" name="policies_shipping" rows="5">${he.encode(settings.policies_shipping || '')}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="policies_returns">Return & Refund Policy:</label>
+                        <textarea id="policies_returns" name="policies_returns" rows="5">${he.encode(settings.policies_returns || '')}</textarea>
+                    </div>
+                </div>
+                <div id="contact-section" style="display: none;">
+                    <h2>Contact Page Information</h2>
+                    <div class="form-group">
+                        <label for="contact_email">Email:</label>
+                        <input type="email" id="contact_email" name="contact_email" value="${he.encode(settings.contact_email || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label for="contact_phone">Phone:</label>
+                        <input type="text" id="contact_phone" name="contact_phone" value="${he.encode(settings.contact_phone || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label for="contact_address">Address:</label>
+                        <input type="text" id="contact_address" name="contact_address" value="${he.encode(settings.contact_address || '')}">
+                    </div>
+                </div>
+                <hr style="margin: 2em 0;">
+                <button type="submit" style="background-color: #28a745; color: white;">Save All Settings</button>
+            </form>
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    const selector = document.getElementById('section-selector');
+                    const sections = {
+                        content: document.getElementById('content-section'),
+                        theme: document.getElementById('theme-section'),
+                        about: document.getElementById('about-section'),
+                        policies: document.getElementById('policies-section'),
+                        contact: document.getElementById('contact-section')
+                    };
+                    function showSection(sectionId) {
+                        for (const key in sections) {
+                            if(sections[key]) { sections[key].style.display = 'none'; }
+                        }
+                        if (sections[sectionId]) { sections[sectionId].style.display = 'block'; }
+                    }
+                    selector.addEventListener('change', function() { showSection(this.value); });
+                    showSection(selector.value);
+                });
+            </script>
+            </div></body></html>
+        `);
+    } catch (err) {
+        console.error("Error loading settings page:", err);
+        res.status(500).send('Error loading settings page.');
+    }
+});
+
+app.post('/admin/settings', checkAdminAuth, async (req, res) => {
+    try {
+        const {
+            homepage_headline, homepage_subheadline, banner_text, primary_color,
+            body_font, about_us_content, policies_shipping, policies_returns,
+            contact_email, contact_phone, contact_address, homepage_bg_image,
+            featured_products_title
+        } = req.body;
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const settingsToUpdate = {
+                homepage_headline, homepage_subheadline, banner_text, primary_color,
+                body_font, about_us_content, policies_shipping, policies_returns,
+                contact_email, contact_phone, contact_address, homepage_bg_image,
+                featured_products_title
+            };
+
+            for (const key in settingsToUpdate) {
+                if (settingsToUpdate[key] !== undefined) {
+                    await client.query(
+                        `INSERT INTO site_settings (setting_key, setting_value) VALUES ($1, $2)
+                         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`,
+                        [key, settingsToUpdate[key]]
+                    );
+                }
+            }
+            await client.query('COMMIT');
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+        res.redirect('/admin/settings');
+    } catch (err) {
+        console.error("Error saving site settings:", err);
+        res.status(500).send('Error saving settings.');
+    }
+});
 
 // START: NEW ADMIN ROUTES FOR NAVIGATION
 app.get('/admin/navigation', checkAdminAuth, async (req, res) => {
