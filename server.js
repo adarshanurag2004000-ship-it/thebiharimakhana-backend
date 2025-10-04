@@ -1,4 +1,4 @@
-// --- SERVER.JS WITH DELIVERED & CANCELLED EMAIL NOTIFICATIONS ---
+// --- SERVER.JS WITH PDF INVOICE GENERATION (COMPLETE CODE) ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -11,7 +11,7 @@ require('dotenv').config();
 const sgMail = require('@sendgrid/mail');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
-const PDFDocument = require('pdfkit');
+const PDFDocument = require('pdfkit'); // PDF LIBRARY
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -142,28 +142,6 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "addresses" table is ready.');
-        
-        // START: NEW SITE_SETTINGS TABLE
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS site_settings (
-                setting_key VARCHAR(255) PRIMARY KEY,
-                setting_value TEXT
-            );
-        `);
-        console.log('INFO: "site_settings" table is ready.');
-        
-        // Insert default values only if they don't exist
-        await client.query(`
-            INSERT INTO site_settings (setting_key, setting_value)
-            VALUES 
-                ('homepage_headline', 'Authentic Makhana from the Heart of Bihar'),
-                ('homepage_subheadline', 'Experience the crunchy, healthy, and delicious superfood, delivered right to your doorstep.'),
-                ('banner_text', 'Free Shipping on All Orders Above ₹500!')
-            ON CONFLICT (setting_key) DO NOTHING;
-        `);
-        console.log('INFO: Default site settings are populated.');
-        // END: NEW SITE_SETTINGS TABLE
-
     } catch (err) {
         console.error('Error during database setup:', err);
     } finally {
@@ -184,6 +162,7 @@ async function verifyToken(req, res, next) {
     }
 }
 
+// START: NEW INVOICE PDF GENERATION FUNCTION
 function generateInvoicePdf(order, callback) {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const buffers = [];
@@ -278,7 +257,9 @@ function generateInvoicePdf(order, callback) {
 
     doc.end();
 }
+// END: NEW INVOICE PDF GENERATION FUNCTION
 
+// START: MODIFIED EMAIL FUNCTION TO INCLUDE ATTACHMENTS
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, attachmentPdf) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     
@@ -309,6 +290,7 @@ async function sendOrderConfirmationEmail(customerEmail, customerName, order, at
         console.error('Error sending confirmation email:', error.response.body);
     }
 }
+// END: MODIFIED EMAIL FUNCTION
 
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
@@ -358,27 +340,7 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     }
 }
 
-// START: NEW FUNCTION FOR "DELIVERED" EMAIL
-async function sendOrderDeliveredEmail(customerEmail, customerName, orderId) {
-    const emailHtml = `
-      <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
-        <h1 style="color: #10B981; text-align: center;">Your Order Has Been Delivered!</h1>
-        <p>Hi ${he.encode(customerName)},</p>
-        <p>We're happy to let you know that your order #${orderId} has been delivered successfully.</p>
-        <p>We hope you enjoy your products! We would be grateful if you could <a href="https://thebiharimakhana.netlify.app/my-orders.html">leave a review</a> for the products you purchased.</p>
-        <p>Thank you for shopping with us!</p>
-      </div>`;
-    const msg = { to: customerEmail, from: 'thebiharimakhana@gmail.com', subject: `Your The Bihari Makhana Order #${orderId} Has Been Delivered!`, html: emailHtml };
-    try {
-        await sgMail.send(msg);
-        console.log('Delivered notification email sent to', customerEmail);
-    } catch (error) {
-        console.error('Error sending delivered notification email:', error);
-    }
-}
-// END: NEW FUNCTION FOR "DELIVERED" EMAIL
-
-// --- Public API Routes (Full code included) ---
+// --- Public API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
@@ -436,23 +398,6 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
-
-// START: NEW PUBLIC ENDPOINT FOR SITE SETTINGS
-app.get('/api/site-settings', async (req, res) => {
-    try {
-        const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
-        const settings = rows.reduce((acc, row) => {
-            acc[row.setting_key] = row.setting_value;
-            return acc;
-        }, {});
-        res.json(settings);
-    } catch (err) {
-        console.error('Error fetching site settings:', err);
-        res.status(500).json({ error: 'Could not fetch site settings.' });
-    }
-});
-// END: NEW PUBLIC ENDPOINT FOR SITE SETTINGS
-
 app.get('/api/featured-products', async (req, res) => {
     try {
         const { rows } = await pool.query(
@@ -732,6 +677,7 @@ app.get('/api/active-coupons', async (req, res) => {
         res.status(500).json([]);
     }
 });
+
 app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -760,7 +706,7 @@ app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
     }
 });
 
-// --- Admin Routes (Full code included) ---
+// --- Admin Routes ---
 
 const checkAdminAuth = (req, res, next) => {
     if (req.cookies.admin_session && req.cookies.admin_session === process.env.ADMIN_SESSION_SECRET) {
@@ -799,7 +745,6 @@ const getAdminHeaderHTML = (currentPageTitle) => {
                 <a href="/admin/users">Users</a>
                 <a href="/admin/coupons">Coupons</a>
                 <a href="/admin/reviews">Reviews</a>
-                <a href="/admin/settings">Site Settings</a>
             </div>
             <div>
                 <a href="/admin/logout" class="logout-btn">Logout</a>
@@ -1083,44 +1028,21 @@ app.get('/admin/orders', checkAdminAuth, async (req, res) => {
     }
 });
 
-// START: MODIFIED ROUTE FOR ORDER STATUS UPDATE
 app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
     const { id } = req.params;
     const { newStatus } = req.body;
     try {
-        // Get all the necessary info in one query
-        const { rows } = await pool.query(
-            'SELECT o.status, o.customer_name, u.email FROM orders o JOIN users u ON o.user_uid = u.firebase_uid WHERE o.id = $1', 
-            [id]
-        );
-
-        if (rows.length > 0) {
-            const orderInfo = rows[0];
-            const previousStatus = orderInfo.status;
-            const customerEmail = orderInfo.email;
-            const customerName = orderInfo.customer_name;
-
-            // Only send an email if the status has actually changed
-            if (newStatus !== previousStatus) {
-                if (newStatus === 'Shipped') {
-                    await sendOrderShippedEmail(customerEmail, customerName, id);
-                } else if (newStatus === 'Delivered') {
-                    await sendOrderDeliveredEmail(customerEmail, customerName, id);
-                } else if (newStatus === 'Cancelled') {
-                    await sendOrderCancellationEmail(customerEmail, customerName, id);
-                }
+        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
+        if(orderCheck.rows.length > 0 && newStatus === 'Shipped' && orderCheck.rows[0].status !== 'Shipped') {
+            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [orderCheck.rows[0].user_uid]);
+            if (userResult.rows.length > 0) {
+                await sendOrderShippedEmail(userResult.rows[0].email, orderCheck.rows[0].customer_name, id);
             }
         }
-
-        // Update the status in the database
         await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
         res.redirect('/admin/orders');
-    } catch (err) {
-        console.error("Error updating order status:", err);
-        res.status(500).send('Error updating order status.');
-    }
+    } catch (err) { res.status(500).send('Error updating order status.'); }
 });
-// END: MODIFIED ROUTE
 
 app.post('/admin/delete-order/:id', checkAdminAuth, async (req, res) => {
     try {
@@ -1229,82 +1151,6 @@ app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error blocking user.');
     }
 });
-
-// START: NEW ADMIN ROUTES FOR SITE SETTINGS
-app.get('/admin/settings', checkAdminAuth, async (req, res) => {
-    try {
-        const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
-        const settings = rows.reduce((acc, row) => {
-            acc[row.setting_key] = row.setting_value;
-            return acc;
-        }, {});
-
-        const header = getAdminHeaderHTML('Site Settings');
-        res.send(`
-            ${header}
-            <h1>Edit Site Content</h1>
-            <p>Changes made here will be reflected on your live website immediately.</p>
-            <div class="add-form">
-                <form action="/admin/settings" method="POST">
-                    <div class="form-group">
-                        <label for="homepage_headline">Homepage Main Headline:</label>
-                        <input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}">
-                    </div>
-                    <div class="form-group">
-                        <label for="homepage_subheadline">Homepage Sub-Headline:</label>
-                        <textarea id="homepage_subheadline" name="homepage_subheadline" rows="3">${he.encode(settings.homepage_subheadline || '')}</textarea>
-                    </div>
-                    <div class="form-group">
-                        <label for="banner_text">Scrolling Banner Text (Top Bar):</label>
-                        <input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}">
-                    </div>
-                    <button type="submit" style="background-color: #28a745; color: white;">Save Settings</button>
-                </form>
-            </div>
-            </div></body></html>
-        `);
-    } catch (err) {
-        console.error("Error loading settings page:", err);
-        res.status(500).send('Error loading settings page.');
-    }
-});
-
-app.post('/admin/settings', checkAdminAuth, async (req, res) => {
-    try {
-        const { homepage_headline, homepage_subheadline, banner_text } = req.body;
-        
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-            
-            await client.query(
-                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('homepage_headline', $1)
-                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [homepage_headline]
-            );
-            await client.query(
-                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('homepage_subheadline', $1)
-                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [homepage_subheadline]
-            );
-            await client.query(
-                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('banner_text', $1)
-                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [banner_text]
-            );
-            
-            await client.query('COMMIT');
-        } catch (e) {
-            await client.query('ROLLBACK');
-            throw e;
-        } finally {
-            client.release();
-        }
-
-        res.redirect('/admin/settings');
-    } catch (err) {
-        console.error("Error saving site settings:", err);
-        res.status(500).send('Error saving settings.');
-    }
-});
-// END: NEW ADMIN ROUTES FOR SITE SETTINGS
 
 
 app.use((err, req, res, next) => {
