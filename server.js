@@ -1,4 +1,3 @@
-// --- SERVER.JS WITH PDF INVOICE GENERATION (COMPLETE CODE) ---
 // --- SERVER.JS WITH DELIVERED & CANCELLED EMAIL NOTIFICATIONS ---
 
 const express = require('express');
@@ -12,7 +11,6 @@ require('dotenv').config();
 const sgMail = require('@sendgrid/mail');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
-const PDFDocument = require('pdfkit'); // PDF LIBRARY
 const PDFDocument = require('pdfkit');
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
@@ -65,7 +63,7 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "products" table schema is up to date.');
-
+        
         console.log('INFO: Checking if "category" column exists in "products" table...');
         const checkColumnResult = await client.query(`
             SELECT 1 FROM information_schema.columns
@@ -144,6 +142,28 @@ async function setupDatabase() {
             );
         `);
         console.log('INFO: "addresses" table is ready.');
+        
+        // START: NEW SITE_SETTINGS TABLE
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS site_settings (
+                setting_key VARCHAR(255) PRIMARY KEY,
+                setting_value TEXT
+            );
+        `);
+        console.log('INFO: "site_settings" table is ready.');
+        
+        // Insert default values only if they don't exist
+        await client.query(`
+            INSERT INTO site_settings (setting_key, setting_value)
+            VALUES 
+                ('homepage_headline', 'Authentic Makhana from the Heart of Bihar'),
+                ('homepage_subheadline', 'Experience the crunchy, healthy, and delicious superfood, delivered right to your doorstep.'),
+                ('banner_text', 'Free Shipping on All Orders Above ₹500!')
+            ON CONFLICT (setting_key) DO NOTHING;
+        `);
+        console.log('INFO: Default site settings are populated.');
+        // END: NEW SITE_SETTINGS TABLE
+
     } catch (err) {
         console.error('Error during database setup:', err);
     } finally {
@@ -164,7 +184,6 @@ async function verifyToken(req, res, next) {
     }
 }
 
-// START: NEW INVOICE PDF GENERATION FUNCTION
 function generateInvoicePdf(order, callback) {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const buffers = [];
@@ -185,14 +204,14 @@ function generateInvoicePdf(order, callback) {
     doc.text(`Invoice #: ${order.id}`);
     doc.text(`Order Date: ${new Date(order.created_at).toLocaleDateString('en-IN')}`);
     doc.moveDown();
-
+    
     // Customer Details
     doc.text('Bill To:', { font: 'Helvetica-Bold' });
     doc.text(he.decode(order.customer_name));
     doc.text(he.decode(order.address));
     doc.text(`Phone: ${order.phone_number}`);
     doc.moveDown(2);
-
+    
     // Items Table Header
     const tableTop = doc.y;
     doc.font('Helvetica-Bold');
@@ -225,7 +244,7 @@ function generateInvoicePdf(order, callback) {
     doc.font('Helvetica');
     doc.text('Subtotal:', 350, summaryTop, { align: 'right' });
     doc.text(`₹${subtotal.toFixed(2)}`, 0, summaryTop, { align: 'right' });
-
+    
     if (order.discount_amount > 0) {
         doc.moveDown(0.5);
         const discountY = doc.y;
@@ -259,12 +278,10 @@ function generateInvoicePdf(order, callback) {
 
     doc.end();
 }
-// END: NEW INVOICE PDF GENERATION FUNCTION
 
-// START: MODIFIED EMAIL FUNCTION TO INCLUDE ATTACHMENTS
 async function sendOrderConfirmationEmail(customerEmail, customerName, order, attachmentPdf) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-
+    
     const msg = { 
         to: customerEmail, 
         from: 'thebiharimakhana@gmail.com', 
@@ -292,7 +309,6 @@ async function sendOrderConfirmationEmail(customerEmail, customerName, order, at
         console.error('Error sending confirmation email:', error.response.body);
     }
 }
-// END: MODIFIED EMAIL FUNCTION
 
 async function sendOrderCancellationEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
@@ -342,8 +358,6 @@ async function sendOrderShippedEmail(customerEmail, customerName, orderId) {
     }
 }
 
-// --- Public API Routes ---
-// START: NEW FUNCTION FOR "DELIVERED" EMAIL
 async function sendOrderDeliveredEmail(customerEmail, customerName, orderId) {
     const emailHtml = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;">
@@ -361,7 +375,6 @@ async function sendOrderDeliveredEmail(customerEmail, customerName, orderId) {
         console.error('Error sending delivered notification email:', error);
     }
 }
-// END: NEW FUNCTION FOR "DELIVERED" EMAIL
 
 // --- Public API Routes (Full code included) ---
 app.get('/', async (req, res) => {
@@ -404,7 +417,7 @@ app.get('/api/products', async (req, res) => {
             queryParams.push(`%${search}%`);
             query += ` AND (name ILIKE $${queryParams.length} OR description ILIKE $${queryParams.length})`;
         }
-
+        
         let orderByClause = ' ORDER BY created_at DESC';
         switch (sort) {
             case 'price-asc': orderByClause = ' ORDER BY COALESCE(sale_price, price) ASC'; break;
@@ -421,6 +434,39 @@ app.get('/api/products', async (req, res) => {
         res.status(500).send('Error fetching products');
     }
 });
+
+// --- THIS IS THE CORRECTED, ROBUST ENDPOINT FOR A SINGLE PRODUCT ---
+app.get('/api/product/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const query = "SELECT * FROM products WHERE id = $1";
+        const { rows } = await pool.query(query, [id]);
+        
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Product not found.' });
+        }
+        
+        res.json(rows[0]);
+    } catch (err) {
+        console.error('Error fetching single product:', err);
+        res.status(500).send('Error fetching product');
+    }
+});
+
+app.get('/api/site-settings', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
+        const settings = rows.reduce((acc, row) => {
+            acc[row.setting_key] = row.setting_value;
+            return acc;
+        }, {});
+        res.json(settings);
+    } catch (err) {
+        console.error('Error fetching site settings:', err);
+        res.status(500).json({ error: 'Could not fetch site settings.' });
+    }
+});
+
 app.get('/api/featured-products', async (req, res) => {
     try {
         const { rows } = await pool.query(
@@ -510,7 +556,7 @@ app.post('/checkout', verifyToken, async (req, res) => {
         generateInvoicePdf(newOrder, (pdfData) => {
             sendOrderConfirmationEmail(user.email, addressDetails.name, newOrder, pdfData);
         });
-
+        
         res.json({ success: true, message: 'Order placed successfully!' });
     } catch (err) {
         console.error('Error during checkout:', err);
@@ -700,7 +746,6 @@ app.get('/api/active-coupons', async (req, res) => {
         res.status(500).json([]);
     }
 });
-
 app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -716,7 +761,7 @@ app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
         }
 
         const order = rows[0];
-
+        
         generateInvoicePdf(order, (pdfData) => {
             res.setHeader('Content-Type', 'application/pdf');
             res.setHeader('Content-Disposition', `attachment; filename="invoice-${order.id}.pdf"`);
@@ -729,7 +774,6 @@ app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
     }
 });
 
-// --- Admin Routes ---
 // --- Admin Routes (Full code included) ---
 
 const checkAdminAuth = (req, res, next) => {
@@ -769,6 +813,7 @@ const getAdminHeaderHTML = (currentPageTitle) => {
                 <a href="/admin/users">Users</a>
                 <a href="/admin/coupons">Coupons</a>
                 <a href="/admin/reviews">Reviews</a>
+                <a href="/admin/settings">Site Settings</a>
             </div>
             <div>
                 <a href="/admin/logout" class="logout-btn">Logout</a>
@@ -888,7 +933,7 @@ app.get('/admin/edit-product/:id', checkAdminAuth, async (req, res) => {
         if (rows.length === 0) { return res.status(404).send('Product not found.'); }
         const p = rows[0];
         const isChecked = p.is_featured ? 'checked' : '';
-
+        
         const categories = {
             "premium-raw-makhana": "Premium Raw Makhana",
             "premium-flavored-makhana": "Premium Flavored Makhana",
@@ -899,7 +944,7 @@ app.get('/admin/edit-product/:id', checkAdminAuth, async (req, res) => {
             const selected = p.category === value ? 'selected' : '';
             categoryOptions += `<option value="${value}" ${selected}>${text}</option>`;
         }
-
+        
         const header = getAdminHeaderHTML(`Edit: ${he.encode(p.name)}`);
         res.send(`${header}<h1>Edit: ${he.encode(p.name)}</h1>
         <form action="/admin/update-product/${p.id}" method="POST">
@@ -947,7 +992,7 @@ app.get('/admin/users', checkAdminAuth, async (req, res) => {
         const { rows } = await pool.query('SELECT email, firebase_uid, phone, created_at, deleted_at FROM users ORDER BY created_at DESC');
         const usersHtml = rows.map(user => {
             const status = user.deleted_at ? `<span style="color:red;">Deleted on ${new Date(user.deleted_at).toLocaleDateString()}</span>` : '<span style="color:green;">Active</span>';
-
+            
             let actionsHtml = '';
             if (!user.deleted_at) {
                 actionsHtml += `<form action="/admin/soft-delete-user/${user.firebase_uid}" method="POST" style="display:inline-block; margin-right: 5px;">
@@ -1021,7 +1066,7 @@ app.get('/admin/orders', checkAdminAuth, async (req, res) => {
             let itemsHtml = '<ul>' + Object.keys(order.cart_items).map(key => `<li>${he.encode(key)} (x${order.cart_items[key].quantity})</li>`).join('') + '</ul>';
             const statuses = ['Processing', 'Shipped', 'Delivered', 'Cancelled'];
             const statusOptions = statuses.map(s => `<option value="${s}" ${order.status === s ? 'selected' : ''}>${s}</option>`).join('');
-
+            
             const actionsHtml = `<form action="/admin/delete-order/${order.id}" method="POST" style="margin-top: 5px;">
                                     <button type="submit" class="permanent-delete-btn" onclick="return confirm('Are you sure you want to permanently delete this order record?');">Delete Order</button>
                                  </form>`;
@@ -1057,11 +1102,6 @@ app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
     const { id } = req.params;
     const { newStatus } = req.body;
     try {
-        const orderCheck = await pool.query('SELECT status, user_uid, customer_name FROM orders WHERE id = $1', [id]);
-        if(orderCheck.rows.length > 0 && newStatus === 'Shipped' && orderCheck.rows[0].status !== 'Shipped') {
-            const userResult = await pool.query('SELECT email FROM users WHERE firebase_uid = $1', [orderCheck.rows[0].user_uid]);
-            if (userResult.rows.length > 0) {
-                await sendOrderShippedEmail(userResult.rows[0].email, orderCheck.rows[0].customer_name, id);
         // Get all the necessary info in one query
         const { rows } = await pool.query(
             'SELECT o.status, o.customer_name, u.email FROM orders o JOIN users u ON o.user_uid = u.firebase_uid WHERE o.id = $1', 
@@ -1089,7 +1129,6 @@ app.post('/admin/update-order-status/:id', checkAdminAuth, async (req, res) => {
         // Update the status in the database
         await pool.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, id]);
         res.redirect('/admin/orders');
-    } catch (err) { res.status(500).send('Error updating order status.'); }
     } catch (err) {
         console.error("Error updating order status:", err);
         res.status(500).send('Error updating order status.');
@@ -1117,7 +1156,7 @@ app.get('/admin/coupons', checkAdminAuth, async (req, res) => {
             <td>${c.discount_value}</td><td>${c.is_active ? 'Yes' : 'No'}</td>
             <td><form action="/admin/delete-coupon/${c.id}" method="POST" style="display:inline;"><button type="submit" onclick="return confirm('Are you sure?');">Delete</button></form></td>
         </tr>`).join('');
-
+        
         const header = getAdminHeaderHTML('Manage Coupons');
         res.send(`
             ${header}<h1>Manage Coupons</h1>
@@ -1202,6 +1241,80 @@ app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => {
         res.redirect('/admin/reviews');
     } catch (err) {
         res.status(500).send('Error blocking user.');
+    }
+});
+
+app.get('/admin/settings', checkAdminAuth, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
+        const settings = rows.reduce((acc, row) => {
+            acc[row.setting_key] = row.setting_value;
+            return acc;
+        }, {});
+
+        const header = getAdminHeaderHTML('Site Settings');
+        res.send(`
+            ${header}
+            <h1>Edit Site Content</h1>
+            <p>Changes made here will be reflected on your live website immediately.</p>
+            <div class="add-form">
+                <form action="/admin/settings" method="POST">
+                    <div class="form-group">
+                        <label for="homepage_headline">Homepage Main Headline:</label>
+                        <input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label for="homepage_subheadline">Homepage Sub-Headline:</label>
+                        <textarea id="homepage_subheadline" name="homepage_subheadline" rows="3">${he.encode(settings.homepage_subheadline || '')}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="banner_text">Scrolling Banner Text (Top Bar):</label>
+                        <input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}">
+                    </div>
+                    <button type="submit" style="background-color: #28a745; color: white;">Save Settings</button>
+                </form>
+            </div>
+            </div></body></html>
+        `);
+    } catch (err) {
+        console.error("Error loading settings page:", err);
+        res.status(500).send('Error loading settings page.');
+    }
+});
+
+app.post('/admin/settings', checkAdminAuth, async (req, res) => {
+    try {
+        const { homepage_headline, homepage_subheadline, banner_text } = req.body;
+        
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            
+            await client.query(
+                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('homepage_headline', $1)
+                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [homepage_headline]
+            );
+            await client.query(
+                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('homepage_subheadline', $1)
+                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [homepage_subheadline]
+            );
+            await client.query(
+                `INSERT INTO site_settings (setting_key, setting_value) VALUES ('banner_text', $1)
+                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1`, [banner_text]
+            );
+            
+            await client.query('COMMIT');
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+
+        res.redirect('/admin/settings');
+    } catch (err) {
+        console.error("Error saving site settings:", err);
+        res.status(500).send('Error saving settings.');
     }
 });
 
