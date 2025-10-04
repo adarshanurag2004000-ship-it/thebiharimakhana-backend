@@ -1,4 +1,4 @@
-// --- SERVER.JS WITH DYNAMIC NAVIGATION ---
+// --- SERVER.JS WITH EJS TEMPLATING SYSTEM ---
 
 const express = require('express');
 const { Pool } = require('pg');
@@ -12,6 +12,8 @@ const sgMail = require('@sendgrid/mail');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
 const PDFDocument = require('pdfkit');
+const path = require('path');
+const expressLayouts = require('express-ejs-layouts');
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -25,12 +27,11 @@ admin.initializeApp({
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Corrected Helmet configuration to allow inline scripts for the admin panel
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-            "script-src": ["'self'", "'unsafe-inline'"],
+            "script-src": ["'self'", "'unsafe-inline'", "https://www.gstatic.com", "https://checkout.razorpay.com", "https://cdnjs.cloudflare.com"],
         },
     },
 }));
@@ -38,6 +39,14 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+// START: EJS and Layout Setup
+app.use(expressLayouts);
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.set('layout', '_layout'); // Sets the default layout to _layout.ejs
+// END: EJS and Layout Setup
+
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -93,30 +102,20 @@ async function setupDatabase() {
                 ('contact_email', 'thebiharimakhana@gmail.com'),
                 ('contact_phone', '+91 7295901346'),
                 ('contact_address', 'Bhagalpur, Bihar, India'),
-                ('homepage_bg_image', '')
+                ('homepage_bg_image', ''),
+                ('footer_copyright', '© 2025 The Bihari Makhana. All Rights Reserved.'),
+                ('footer_social_facebook', ''),
+                ('footer_social_instagram', '')
             ON CONFLICT (setting_key) DO NOTHING;
         `);
         console.log('INFO: Default site settings are populated.');
 
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS navigation_links (
-                id SERIAL PRIMARY KEY,
-                link_text VARCHAR(255) NOT NULL,
-                link_url VARCHAR(2048) NOT NULL,
-                display_order INTEGER NOT NULL
-            );
-        `);
+        await client.query(`CREATE TABLE IF NOT EXISTS navigation_links (id SERIAL PRIMARY KEY, link_text VARCHAR(255) NOT NULL, link_url VARCHAR(255) NOT NULL, display_order INTEGER NOT NULL);`);
         console.log('INFO: "navigation_links" table is ready.');
         
         const navLinksResult = await client.query('SELECT 1 FROM navigation_links LIMIT 1');
         if (navLinksResult.rowCount === 0) {
-            await client.query(`
-                INSERT INTO navigation_links (link_text, link_url, display_order) VALUES
-                ('Shop', 'shop.html', 1),
-                ('About Us', 'about.html', 2),
-                ('Contact', 'contact.html', 3),
-                ('Policies', 'policies.html', 4);
-            `);
+            await client.query(`INSERT INTO navigation_links (link_text, link_url, display_order) VALUES ('Shop', '/shop', 1), ('About Us', '/about', 2), ('Contact', '/contact', 3), ('Policies', '/policies', 4);`);
             console.log('INFO: Default navigation links have been populated.');
         }
 
@@ -215,9 +214,7 @@ function generateInvoicePdf(order, callback) {
         doc.text(`Payment ID: ${order.razorpay_payment_id}`, { align: 'left' });
     }
     doc.end();
-}
-
-async function sendOrderConfirmationEmail(customerEmail, customerName, order, attachmentPdf) {
+}async function sendOrderConfirmationEmail(customerEmail, customerName, order, attachmentPdf) {
     const orderDate = new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
     const msg = { 
         to: customerEmail, 
@@ -249,8 +246,38 @@ async function sendOrderDeliveredEmail(customerEmail, customerName, orderId) {
     const emailHtml = `<div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px;"><h1 style="color: #10B981; text-align: center;">Your Order Has Been Delivered!</h1><p>Hi ${he.encode(customerName)},</p><p>We're happy to let you know that your order #${orderId} has been delivered successfully.</p><p>We hope you enjoy your products! We would be grateful if you could <a href="https://thebiharimakhana.netlify.app/my-orders.html">leave a review</a> for the products you purchased.</p><p>Thank you for shopping with us!</p></div>`;
     const msg = { to: customerEmail, from: 'thebiharimakhana@gmail.com', subject: `Your The Bihari Makhana Order #${orderId} Has Been Delivered!`, html: emailHtml };
     try { await sgMail.send(msg); console.log('Delivered notification email sent to', customerEmail); } catch (error) { console.error('Error sending delivered notification email:', error); }
-}// --- Public API Routes ---
+}
+
+// --- START: NEW FRONTEND PAGE ROUTES ---
+
 app.get('/', async (req, res) => {
+    res.render('index', { 
+        title: 'Home',
+        extraHeadContent: '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tiny-slider/2.9.4/tiny-slider.css">'
+    });
+});
+app.get('/shop', (req, res) => { res.render('shop', { title: 'Shop' }); });
+app.get('/product', (req, res) => { res.render('product', { title: 'Product' }); });
+app.get('/about', (req, res) => { res.render('about', { title: 'About Us' }); });
+app.get('/contact', (req, res) => { res.render('contact', { title: 'Contact' }); });
+app.get('/policies', (req, res) => { res.render('policies', { title: 'Policies' }); });
+app.get('/account', (req, res) => { res.render('account', { title: 'My Account' }); });
+app.get('/my-orders', (req, res) => { res.render('my-orders', { title: 'My Orders' }); });
+app.get('/my-addresses', (req, res) => { res.render('my-addresses', { title: 'My Addresses' }); });
+app.get('/checkout', (req, res) => { res.render('checkout', { title: 'Checkout' }); });
+app.get('/payment', (req, res) => { res.render('payment', { title: 'Payment', extraHeadContent: '<script src="https://checkout.razorpay.com/v1/checkout.js"></script>' }); });
+app.get('/confirmation', (req, res) => { res.render('confirmation', { title: 'Order Confirmed' }); });
+app.get('/login', (req, res) => { res.render('login', { title: 'Login' }); });
+app.get('/signup', (req, res) => { res.render('signup', { title: 'Signup' }); });
+app.get('/forgot-password', (req, res) => { res.render('forgot-password', { title: 'Forgot Password' }); });
+app.get('/leave-review', (req, res) => { res.render('leave-review', { title: 'Leave a Review' }); });
+app.get('/verify-deletion', (req, res) => { res.render('verify-deletion', { title: 'Verify Deletion' }); });
+
+// --- END: NEW FRONTEND PAGE ROUTES ---
+
+
+// --- Public API Routes ---
+app.get('/api/check-db', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
         res.send('The Bihari Makhana Backend is running and connected to the database.');
@@ -302,7 +329,6 @@ app.get('/api/navigation', async (req, res) => {
         res.status(500).json([]);
     }
 });
-
 app.get('/api/featured-products', async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM products WHERE is_featured = TRUE AND stock_quantity > 0 ORDER BY created_at DESC');
@@ -331,7 +357,7 @@ app.post('/api/apply-coupon', async (req, res) => {
         res.json({ success: true, subtotal, shippingCost, discount, total, appliedCoupon });
     } catch (err) { console.error("Error in apply-coupon:", err); res.status(500).json({ success: false, message: "Error applying coupon."}); }
 });
-app.post('/checkout', verifyToken, async (req, res) => {
+app.post('/api/checkout', verifyToken, async (req, res) => {
     const { cart, addressDetails, paymentId, couponCode } = req.body;
     const user = req.user; 
     if (!cart || !addressDetails || !paymentId || Object.keys(cart).length === 0) { return res.status(400).json({ success: false, message: 'Missing required order information.' }); }
@@ -559,86 +585,12 @@ app.post('/admin/delete-coupon/:id', checkAdminAuth, async (req, res) => { try {
 app.get('/admin/reviews', checkAdminAuth, async (req, res) => { try { const { rows } = await pool.query('SELECT r.id, r.product_name, r.rating, r.review_text, r.reviewer_name, r.user_uid, u.email FROM reviews r JOIN users u ON r.user_uid = u.firebase_uid ORDER BY r.created_at DESC'); const reviewsHtml = rows.map(r => `<tr><td>${r.id}</td><td>${he.encode(r.product_name)}</td><td>${he.encode(r.reviewer_name)}<br>(${he.encode(r.email)})</td><td>${'⭐'.repeat(r.rating)}</td><td>${he.encode(r.review_text || '')}</td><td><form action="/admin/delete-review/${r.id}" method="POST" style="display:inline-block; margin-bottom: 5px;"><button type="submit" onclick="return confirm('Delete review?');">Delete Review</button></form><form action="/admin/block-user/${r.user_uid}" method="POST" style="display:inline-block;"><button type="submit" onclick="return confirm('Block this user from leaving reviews?');">Block User</button></form></td></tr>`).join(''); const header = getAdminHeaderHTML('Manage Reviews'); res.send(`${header}<h1>Manage Reviews</h1><table><thead><tr><th>ID</th><th>Product</th><th>Reviewer</th><th>Rating</th><th>Review Text</th><th>Actions</th></tr></thead><tbody>${reviewsHtml}</tbody></table></div></body></html>`); } catch (err) { res.status(500).send('Error loading reviews management page.'); } });
 app.post('/admin/delete-review/:id', checkAdminAuth, async (req, res) => { try { await pool.query('DELETE FROM reviews WHERE id = $1', [req.params.id]); res.redirect('/admin/reviews'); } catch (err) { res.status(500).send('Error deleting review.'); } });
 app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => { try { await pool.query('UPDATE users SET is_blocked_from_reviewing = TRUE WHERE firebase_uid = $1', [req.params.uid]); res.redirect('/admin/reviews'); } catch (err) { res.status(500).send('Error blocking user.'); } });
-app.get('/admin/settings', checkAdminAuth, async (req, res) => { try { const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings'); const settings = rows.reduce((acc, row) => { acc[row.setting_key] = row.setting_value; return acc; }, {}); const fonts = ['Inter', 'Poppins', 'Roboto', 'Merriweather']; const fontOptions = fonts.map(font => `<option value="${font}" ${settings.body_font === font ? 'selected' : ''}>${font}</option>`).join(''); const header = getAdminHeaderHTML('Site Settings'); res.send(`${header}<h1>Edit Site Content & Theme</h1><p>Changes made here will be reflected on your live website immediately.</p><div class="form-group"><label for="section-selector">Choose a section to edit:</label><select id="section-selector"><option value="content">Homepage & Banner</option><option value="theme">Theme & Fonts</option><option value="about">About Us Page</option><option value="policies">Policies Page</option><option value="contact">Contact Page</option></select></div><form action="/admin/settings" method="POST" class="add-form"><div id="content-section" style="display: none;"><h2>Homepage & Banner Content</h2><div class="form-group"><label for="homepage_headline">Homepage Main Headline:</label><input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}"></div><div class="form-group"><label for="homepage_subheadline">Homepage Sub-Headline:</label><textarea id="homepage_subheadline" name="homepage_subheadline" rows="3">${he.encode(settings.homepage_subheadline || '')}</textarea></div><div class="form-group"><label for="banner_text">Scrolling Banner Text (Top Bar):</label><input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}"></div><div class="form-group"><label for="homepage_bg_image">Homepage Background Image URL:</label><input type="text" id="homepage_bg_image" name="homepage_bg_image" value="${he.encode(settings.homepage_bg_image || '')}" placeholder="Leave blank to use theme color"></div></div><div id="theme-section" style="display: none;"><h2>Theme & Fonts</h2><div class="form-group"><label for="primary_color">Primary Color:</label><input type="color" id="primary_color" name="primary_color" value="${he.encode(settings.primary_color || '#F97316')}"></div><div class="form-group"><label for="body_font">Main Website Font:</label><select id="body_font" name="body_font">${fontOptions}</select></div></div><div id="about-section" style="display: none;"><h2>About Us Page Content</h2><div class="form-group"><label for="about_us_content">Content:</label><textarea id="about_us_content" name="about_us_content" rows="10">${he.encode(settings.about_us_content || '')}</textarea></div></div><div id="policies-section" style="display: none;"><h2>Policies Page Content</h2><div class="form-group"><label for="policies_shipping">Shipping Policy:</label><textarea id="policies_shipping" name="policies_shipping" rows="5">${he.encode(settings.policies_shipping || '')}</textarea></div><div class="form-group"><label for="policies_returns">Return & Refund Policy:</label><textarea id="policies_returns" name="policies_returns" rows="5">${he.encode(settings.policies_returns || '')}</textarea></div></div><div id="contact-section" style="display: none;"><h2>Contact Page Information</h2><div class="form-group"><label for="contact_email">Email:</label><input type="email" id="contact_email" name="contact_email" value="${he.encode(settings.contact_email || '')}"></div><div class="form-group"><label for="contact_phone">Phone:</label><input type="text" id="contact_phone" name="contact_phone" value="${he.encode(settings.contact_phone || '')}"></div><div class="form-group"><label for="contact_address">Address:</label><input type="text" id="contact_address" name="contact_address" value="${he.encode(settings.contact_address || '')}"></div></div><hr style="margin: 2em 0;"><button type="submit" style="background-color: #28a745; color: white;">Save All Settings</button></form><script>document.addEventListener('DOMContentLoaded', function() { const selector = document.getElementById('section-selector'); const sections = { content: document.getElementById('content-section'), theme: document.getElementById('theme-section'), about: document.getElementById('about-section'), policies: document.getElementById('policies-section'), contact: document.getElementById('contact-section') }; function showSection(sectionId) { for (const key in sections) { if(sections[key]) { sections[key].style.display = 'none'; } } if (sections[sectionId]) { sections[sectionId].style.display = 'block'; } } selector.addEventListener('change', function() { showSection(this.value); }); showSection(selector.value); });</script></div></body></html>`); } catch (err) { console.error("Error loading settings page:", err); res.status(500).send('Error loading settings page.'); } });
-app.post('/admin/settings', checkAdminAuth, async (req, res) => { try { const { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns, contact_email, contact_phone, contact_address, homepage_bg_image } = req.body; const client = await pool.connect(); try { await client.query('BEGIN'); const settingsToUpdate = { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns, contact_email, contact_phone, contact_address, homepage_bg_image }; for (const key in settingsToUpdate) { if (settingsToUpdate[key] !== undefined) { await client.query(`INSERT INTO site_settings (setting_key, setting_value) VALUES ($1, $2) ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`, [key, settingsToUpdate[key]]); } } await client.query('COMMIT'); } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); } res.redirect('/admin/settings'); } catch (err) { console.error("Error saving site settings:", err); res.status(500).send('Error saving settings.'); } });
-
-// START: NEW ADMIN ROUTES FOR NAVIGATION
-app.get('/admin/navigation', checkAdminAuth, async (req, res) => {
-    try {
-        const { rows } = await pool.query('SELECT * FROM navigation_links ORDER BY display_order ASC');
-        const linksHtml = rows.map(link => `
-            <tr>
-                <td>${link.id}</td>
-                <td><input form="update-form-${link.id}" type="text" name="link_text" value="${he.encode(link.link_text)}" style="width: 95%;"></td>
-                <td><input form="update-form-${link.id}" type="text" name="link_url" value="${he.encode(link.link_url)}" style="width: 95%;"></td>
-                <td><input form="update-form-${link.id}" type="number" name="display_order" value="${link.display_order}" style="width: 60px;"></td>
-                <td>
-                    <form id="update-form-${link.id}" action="/admin/navigation/update/${link.id}" method="POST" style="display:inline;"><button type="submit">Update</button></form>
-                    <form action="/admin/navigation/delete/${link.id}" method="POST" style="display:inline;"><button type="submit" class="permanent-delete-btn" onclick="return confirm('Are you sure?');">Delete</button></form>
-                </td>
-            </tr>
-        `).join('');
-
-        const header = getAdminHeaderHTML('Manage Navigation');
-        res.send(`
-            ${header}
-            <h1>Manage Main Navigation</h1>
-            <p>Here you can add, edit, reorder, and delete the main links in your website's header. Lower numbers for 'Order' appear first.</p>
-            <table>
-                <thead><tr><th>ID</th><th>Link Text</th><th>URL</th><th>Order</th><th>Actions</th></tr></thead>
-                <tbody>${linksHtml}</tbody>
-            </table>
-            <div class="add-form">
-                <h2>Add New Link</h2>
-                <form action="/admin/navigation/add" method="POST">
-                    <div class="form-group"><label>Link Text: <input name="link_text" required></label></div>
-                    <div class="form-group"><label>URL (e.g., 'shop.html' or 'https://example.com'): <input name="link_url" required></label></div>
-                    <div class="form-group"><label>Display Order: <input name="display_order" type="number" value="10" required></label></div>
-                    <button type="submit" style="background-color: #28a745; color: white;">Add New Link</button>
-                </form>
-            </div>
-            </div></body></html>
-        `);
-    } catch (err) {
-        console.error("Error loading navigation page:", err);
-        res.status(500).send('Error loading navigation page.');
-    }
-});
-
-app.post('/admin/navigation/add', checkAdminAuth, async (req, res) => {
-    try {
-        const { link_text, link_url, display_order } = req.body;
-        await pool.query('INSERT INTO navigation_links (link_text, link_url, display_order) VALUES ($1, $2, $3)', [link_text, link_url, display_order]);
-        res.redirect('/admin/navigation');
-    } catch (err) {
-        console.error("Error adding nav link:", err);
-        res.status(500).send('Error adding link.');
-    }
-});
-
-app.post('/admin/navigation/update/:id', checkAdminAuth, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { link_text, link_url, display_order } = req.body;
-        await pool.query('UPDATE navigation_links SET link_text = $1, link_url = $2, display_order = $3 WHERE id = $4', [link_text, link_url, display_order, id]);
-        res.redirect('/admin/navigation');
-    } catch (err) {
-        console.error("Error updating nav link:", err);
-        res.status(500).send('Error updating link.');
-    }
-});
-
-app.post('/admin/navigation/delete/:id', checkAdminAuth, async (req, res) => {
-    try {
-        const { id } = req.params;
-        await pool.query('DELETE FROM navigation_links WHERE id = $1', [id]);
-        res.redirect('/admin/navigation');
-    } catch (err) {
-        console.error("Error deleting nav link:", err);
-        res.status(500).send('Error deleting link.');
-    }
-});
-// END: NEW ADMIN ROUTES FOR NAVIGATION
+app.get('/admin/settings', checkAdminAuth, async (req, res) => { try { const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings'); const settings = rows.reduce((acc, row) => { acc[row.setting_key] = row.setting_value; return acc; }, {}); const fonts = ['Inter', 'Poppins', 'Roboto', 'Merriweather']; const fontOptions = fonts.map(font => `<option value="${font}" ${settings.body_font === font ? 'selected' : ''}>${font}</option>`).join(''); const header = getAdminHeaderHTML('Site Settings'); res.send(`${header}<h1>Edit Site Content & Theme</h1><p>Changes made here will be reflected on your live website immediately.</p><div class="form-group"><label for="section-selector">Choose a section to edit:</label><select id="section-selector"><option value="content">Homepage & Banner</option><option value="theme">Theme & Fonts</option><option value="about">About Us Page</option><option value="policies">Policies Page</option><option value="contact">Contact Page</option><option value="footer">Footer</option></select></div><form action="/admin/settings" method="POST" class="add-form"><div id="content-section" style="display: none;"><h2>Homepage & Banner Content</h2><div class="form-group"><label for="homepage_headline">Homepage Main Headline:</label><input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}"></div><div class="form-group"><label for="homepage_subheadline">Homepage Sub-Headline:</label><textarea id="homepage_subheadline" name="homepage_subheadline" rows="3">${he.encode(settings.homepage_subheadline || '')}</textarea></div><div class="form-group"><label for="banner_text">Scrolling Banner Text (Top Bar):</label><input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}"></div><div class="form-group"><label for="homepage_bg_image">Homepage Background Image URL:</label><input type="text" id="homepage_bg_image" name="homepage_bg_image" value="${he.encode(settings.homepage_bg_image || '')}" placeholder="Leave blank to use theme color"></div></div><div id="theme-section" style="display: none;"><h2>Theme & Fonts</h2><div class="form-group"><label for="primary_color">Primary Color:</label><input type="color" id="primary_color" name="primary_color" value="${he.encode(settings.primary_color || '#F97316')}"></div><div class="form-group"><label for="body_font">Main Website Font:</label><select id="body_font" name="body_font">${fontOptions}</select></div></div><div id="about-section" style="display: none;"><h2>About Us Page Content</h2><div class="form-group"><label for="about_us_content">Content:</label><textarea id="about_us_content" name="about_us_content" rows="10">${he.encode(settings.about_us_content || '')}</textarea></div></div><div id="policies-section" style="display: none;"><h2>Policies Page Content</h2><div class="form-group"><label for="policies_shipping">Shipping Policy:</label><textarea id="policies_shipping" name="policies_shipping" rows="5">${he.encode(settings.policies_shipping || '')}</textarea></div><div class="form-group"><label for="policies_returns">Return & Refund Policy:</label><textarea id="policies_returns" name="policies_returns" rows="5">${he.encode(settings.policies_returns || '')}</textarea></div></div><div id="contact-section" style="display: none;"><h2>Contact Page Information</h2><div class="form-group"><label for="contact_email">Email:</label><input type="email" id="contact_email" name="contact_email" value="${he.encode(settings.contact_email || '')}"></div><div class="form-group"><label for="contact_phone">Phone:</label><input type="text" id="contact_phone" name="contact_phone" value="${he.encode(settings.contact_phone || '')}"></div><div class="form-group"><label for="contact_address">Address:</label><input type="text" id="contact_address" name="contact_address" value="${he.encode(settings.contact_address || '')}"></div></div><div id="footer-section" style="display: none;"><h2>Footer Content</h2><div class="form-group"><label for="footer_copyright">Copyright Text:</label><input type="text" id="footer_copyright" name="footer_copyright" value="${he.encode(settings.footer_copyright || '')}"></div><div class="form-group"><label for="footer_social_facebook">Facebook URL:</label><input type="url" id="footer_social_facebook" name="footer_social_facebook" value="${he.encode(settings.footer_social_facebook || '')}" placeholder="Leave blank to hide"></div><div class="form-group"><label for="footer_social_instagram">Instagram URL:</label><input type="url" id="footer_social_instagram" name="footer_social_instagram" value="${he.encode(settings.footer_social_instagram || '')}" placeholder="Leave blank to hide"></div></div><hr style="margin: 2em 0;"><button type="submit" style="background-color: #28a745; color: white;">Save All Settings</button></form><script>document.addEventListener('DOMContentLoaded', function() { const selector = document.getElementById('section-selector'); const sections = { content: document.getElementById('content-section'), theme: document.getElementById('theme-section'), about: document.getElementById('about-section'), policies: document.getElementById('policies-section'), contact: document.getElementById('contact-section'), footer: document.getElementById('footer-section') }; function showSection(sectionId) { for (const key in sections) { if(sections[key]) { sections[key].style.display = 'none'; } } if (sections[sectionId]) { sections[sectionId].style.display = 'block'; } } selector.addEventListener('change', function() { showSection(this.value); }); showSection(selector.value); });</script></div></body></html>`); } catch (err) { console.error("Error loading settings page:", err); res.status(500).send('Error loading settings page.'); } });
+app.post('/admin/settings', checkAdminAuth, async (req, res) => { try { const { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns, contact_email, contact_phone, contact_address, homepage_bg_image, footer_copyright, footer_social_facebook, footer_social_instagram } = req.body; const client = await pool.connect(); try { await client.query('BEGIN'); const settingsToUpdate = { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font, about_us_content, policies_shipping, policies_returns, contact_email, contact_phone, contact_address, homepage_bg_image, footer_copyright, footer_social_facebook, footer_social_instagram }; for (const key in settingsToUpdate) { if (settingsToUpdate[key] !== undefined) { await client.query(`INSERT INTO site_settings (setting_key, setting_value) VALUES ($1, $2) ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`, [key, settingsToUpdate[key]]); } } await client.query('COMMIT'); } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); } res.redirect('/admin/settings'); } catch (err) { console.error("Error saving site settings:", err); res.status(500).send('Error saving settings.'); } });
+app.get('/admin/navigation', checkAdminAuth, async (req, res) => { try { const { rows } = await pool.query('SELECT * FROM navigation_links ORDER BY display_order ASC'); const linksHtml = rows.map(link => `<tr><td>${link.id}</td><td><input form="update-form-${link.id}" type="text" name="link_text" value="${he.encode(link.link_text)}" style="width: 95%;"></td><td><input form="update-form-${link.id}" type="text" name="link_url" value="${he.encode(link.link_url)}" style="width: 95%;"></td><td><input form="update-form-${link.id}" type="number" name="display_order" value="${link.display_order}" style="width: 60px;"></td><td><form id="update-form-${link.id}" action="/admin/navigation/update/${link.id}" method="POST" style="display:inline;"><button type="submit">Update</button></form><form action="/admin/navigation/delete/${link.id}" method="POST" style="display:inline;"><button type="submit" class="permanent-delete-btn" onclick="return confirm('Are you sure?');">Delete</button></form></td></tr>`).join(''); const header = getAdminHeaderHTML('Manage Navigation'); res.send(`${header}<h1>Manage Main Navigation</h1><p>Here you can add, edit, reorder, and delete the main links in your website's header. Lower numbers for 'Order' appear first.</p><table><thead><tr><th>ID</th><th>Link Text</th><th>URL</th><th>Order</th><th>Actions</th></tr></thead><tbody>${linksHtml}</tbody></table><div class="add-form"><h2>Add New Link</h2><form action="/admin/navigation/add" method="POST"><div class="form-group"><label>Link Text: <input name="link_text" required></label></div><div class="form-group"><label>URL (e.g., '/shop' or '/contact'): <input name="link_url" required></label></div><div class="form-group"><label>Display Order: <input name="display_order" type="number" value="10" required></label></div><button type="submit" style="background-color: #28a745; color: white;">Add New Link</button></form></div></div></body></html>`); } catch (err) { console.error("Error loading navigation page:", err); res.status(500).send('Error loading navigation page.'); } });
+app.post('/admin/navigation/add', checkAdminAuth, async (req, res) => { try { const { link_text, link_url, display_order } = req.body; await pool.query('INSERT INTO navigation_links (link_text, link_url, display_order) VALUES ($1, $2, $3)', [link_text, link_url, display_order]); res.redirect('/admin/navigation'); } catch (err) { console.error("Error adding nav link:", err); res.status(500).send('Error adding link.'); } });
+app.post('/admin/navigation/update/:id', checkAdminAuth, async (req, res) => { try { const { id } = req.params; const { link_text, link_url, display_order } = req.body; await pool.query('UPDATE navigation_links SET link_text = $1, link_url = $2, display_order = $3 WHERE id = $4', [link_text, link_url, display_order, id]); res.redirect('/admin/navigation'); } catch (err) { console.error("Error updating nav link:", err); res.status(500).send('Error updating link.'); } });
+app.post('/admin/navigation/delete/:id', checkAdminAuth, async (req, res) => { try { const { id } = req.params; await pool.query('DELETE FROM navigation_links WHERE id = $1', [id]); res.redirect('/admin/navigation'); } catch (err) { console.error("Error deleting nav link:", err); res.status(500).send('Error deleting link.'); } });
 
 
 app.use((err, req, res, next) => {
