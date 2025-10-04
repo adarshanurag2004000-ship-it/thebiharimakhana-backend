@@ -437,6 +437,25 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
+// --- NEWLY ADDED ENDPOINT FOR SINGLE PRODUCT ---
+app.get('/api/product/:productId', async (req, res) => {
+    try {
+        const { productId } = req.params;
+        // This query finds the product by matching the URL-friendly name
+        const query = "SELECT * FROM products WHERE LOWER(REPLACE(name, ' ', '-')) = $1";
+        const { rows } = await pool.query(query, [productId]);
+        
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Product not found.' });
+        }
+        
+        res.json(rows[0]); // Send back only the single product found
+    } catch (err) {
+        console.error('Error fetching single product:', err);
+        res.status(500).send('Error fetching product');
+    }
+});
+
 // START: NEW PUBLIC ENDPOINT FOR SITE SETTINGS
 app.get('/api/site-settings', async (req, res) => {
     try {
