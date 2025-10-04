@@ -151,7 +151,6 @@ async function setupDatabase() {
         `);
         console.log('INFO: "site_settings" table is ready.');
         
-        // START: ADD NEW THEME SETTINGS TO DATABASE
         await client.query(`
             INSERT INTO site_settings (setting_key, setting_value)
             VALUES 
@@ -159,11 +158,13 @@ async function setupDatabase() {
                 ('homepage_subheadline', 'Experience the crunchy, healthy, and delicious superfood, delivered right to your doorstep.'),
                 ('banner_text', 'Free Shipping on All Orders Above ₹500!'),
                 ('primary_color', '#F97316'),
-                ('body_font', 'Inter')
+                ('body_font', 'Inter'),
+                ('about_us_content', 'Bihari Makhana celebrates the rich heritage of Mithila, Bihar, a region renowned for producing over 90% of the world''s Fox Nuts. Our makhana is ethically sourced from local farmers who use traditional harvesting methods passed down through generations.\n\nWe are committed to delivering not just a snack, but a piece of our culture. Each kernel is carefully selected and roasted to perfection, ensuring a crunchy, guilt-free delight that''s as nutritious as it is delicious.'),
+                ('policies_shipping', 'We ship all orders within 3-5 business days. Shipping is free on all orders above ₹500. For all other orders, a flat rate of ₹99 will be charged.'),
+                ('policies_returns', 'Due to the nature of our products, we do not accept returns. However, if your order arrives damaged, please contact us at thebiharimakhana@gmail.com within 48 hours with a video of opening the package , and we will be happy to assist you.')
             ON CONFLICT (setting_key) DO NOTHING;
         `);
         console.log('INFO: Default site settings are populated.');
-        // END: ADD NEW THEME SETTINGS TO DATABASE
 
     } catch (err) {
         console.error('Error during database setup:', err);
@@ -377,7 +378,7 @@ async function sendOrderDeliveredEmail(customerEmail, customerName, orderId) {
     }
 }
 
-// --- Public API Routes (Full code included) ---
+// --- Public API Routes ---
 app.get('/', async (req, res) => {
     try {
         await pool.query('SELECT NOW()');
@@ -757,7 +758,7 @@ app.get('/api/my-orders/:orderId/invoice', verifyToken, async (req, res) => {
     }
 });
 
-// --- Admin Routes (Full code included) ---
+// --- Admin Routes ---
 
 const checkAdminAuth = (req, res, next) => {
     if (req.cookies.admin_session && req.cookies.admin_session === process.env.ADMIN_SESSION_SECRET) {
@@ -780,9 +781,9 @@ const getAdminHeaderHTML = (currentPageTitle) => {
             th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
             th { background-color: #f2f2f2; }
             img { max-width: 50px; }
-            .add-form { margin-top: 2em; padding: 1.5em; border: 1px solid #ddd; background-color: white; }
+            .add-form { margin-top: 1em; padding: 1.5em; border: 1px solid #ddd; background-color: white; }
             .logout-btn { background-color: #f44336; color: white; padding: 0.5em 1em; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; }
-            .form-group{margin-bottom:1em;} label{display:block;margin-bottom:0.5em;} input, select, textarea, button{padding:8px; width: 100%; box-sizing: border-box;}
+            .form-group{margin-bottom:1em;} label{display:block;margin-bottom:0.5em; font-weight: bold;} input, select, textarea, button{padding:8px; width: 100%; box-sizing: border-box;}
             input[type="color"] { padding: 0; height: 40px; }
             button, .button-style { padding: 10px 15px; border: none; cursor: pointer; border-radius: 4px; font-size: 16px;}
             .soft-delete-btn { background-color: #f0ad4e; color: white; }
@@ -1223,7 +1224,6 @@ app.post('/admin/block-user/:uid', checkAdminAuth, async (req, res) => {
     }
 });
 
-// START: MODIFIED ADMIN ROUTES FOR SITE SETTINGS
 app.get('/admin/settings', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT setting_key, setting_value FROM site_settings');
@@ -1242,9 +1242,20 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
             ${header}
             <h1>Edit Site Content & Theme</h1>
             <p>Changes made here will be reflected on your live website immediately.</p>
-            <div class="add-form">
-                <form action="/admin/settings" method="POST">
-                    <h2>Content</h2>
+            
+            <div class="form-group">
+                <label for="section-selector">Choose a section to edit:</label>
+                <select id="section-selector" onchange="showSection(this.value)">
+                    <option value="content">Homepage & Banner</option>
+                    <option value="theme">Theme & Fonts</option>
+                    <option value="about">About Us Page</option>
+                    <option value="policies">Policies Page</option>
+                </select>
+            </div>
+
+            <form action="/admin/settings" method="POST" class="add-form">
+                <div id="content-section">
+                    <h2>Homepage & Banner Content</h2>
                     <div class="form-group">
                         <label for="homepage_headline">Homepage Main Headline:</label>
                         <input type="text" id="homepage_headline" name="homepage_headline" value="${he.encode(settings.homepage_headline || '')}">
@@ -1257,8 +1268,10 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
                         <label for="banner_text">Scrolling Banner Text (Top Bar):</label>
                         <input type="text" id="banner_text" name="banner_text" value="${he.encode(settings.banner_text || '')}">
                     </div>
-                    <hr style="margin: 2em 0;">
-                    <h2>Theme</h2>
+                </div>
+
+                <div id="theme-section" style="display: none;">
+                    <h2>Theme & Fonts</h2>
                     <div class="form-group">
                         <label for="primary_color">Primary Color (for buttons, links, etc.):</label>
                         <input type="color" id="primary_color" name="primary_color" value="${he.encode(settings.primary_color || '#F97316')}">
@@ -1267,9 +1280,44 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
                         <label for="body_font">Main Website Font:</label>
                         <select id="body_font" name="body_font">${fontOptions}</select>
                     </div>
-                    <button type="submit" style="background-color: #28a745; color: white;">Save All Settings</button>
-                </form>
-            </div>
+                </div>
+
+                <div id="about-section" style="display: none;">
+                    <h2>About Us Page Content</h2>
+                    <div class="form-group">
+                        <label for="about_us_content">Content:</label>
+                        <textarea id="about_us_content" name="about_us_content" rows="10">${he.encode(settings.about_us_content || '')}</textarea>
+                    </div>
+                </div>
+
+                <div id="policies-section" style="display: none;">
+                    <h2>Policies Page Content</h2>
+                    <div class="form-group">
+                        <label for="policies_shipping">Shipping Policy:</label>
+                        <textarea id="policies_shipping" name="policies_shipping" rows="5">${he.encode(settings.policies_shipping || '')}</textarea>
+                    </div>
+                     <div class="form-group">
+                        <label for="policies_returns">Return & Refund Policy:</label>
+                        <textarea id="policies_returns" name="policies_returns" rows="5">${he.encode(settings.policies_returns || '')}</textarea>
+                    </div>
+                </div>
+
+                <hr style="margin: 2em 0;">
+                <button type="submit" style="background-color: #28a745; color: white;">Save All Settings</button>
+            </form>
+
+            <script>
+                function showSection(sectionId) {
+                    document.getElementById('content-section').style.display = 'none';
+                    document.getElementById('theme-section').style.display = 'none';
+                    document.getElementById('about-section').style.display = 'none';
+                    document.getElementById('policies-section').style.display = 'none';
+                    
+                    document.getElementById(sectionId + '-section').style.display = 'block';
+                }
+                // Show the first section by default
+                showSection('content');
+            </script>
             </div></body></html>
         `);
     } catch (err) {
@@ -1280,20 +1328,30 @@ app.get('/admin/settings', checkAdminAuth, async (req, res) => {
 
 app.post('/admin/settings', checkAdminAuth, async (req, res) => {
     try {
-        const { homepage_headline, homepage_subheadline, banner_text, primary_color, body_font } = req.body;
+        const { 
+            homepage_headline, homepage_subheadline, banner_text, 
+            primary_color, body_font, 
+            about_us_content,
+            policies_shipping, policies_returns
+        } = req.body;
         
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
             const settingsToUpdate = {
-                homepage_headline, homepage_subheadline, banner_text, primary_color, body_font
+                homepage_headline, homepage_subheadline, banner_text,
+                primary_color, body_font,
+                about_us_content,
+                policies_shipping, policies_returns
             };
 
             for (const key in settingsToUpdate) {
-                await client.query(
-                    `INSERT INTO site_settings (setting_key, setting_value) VALUES ($1, $2)
-                     ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`, [key, settingsToUpdate[key]]
-                );
+                 if (settingsToUpdate[key] !== undefined) {
+                    await client.query(
+                        `INSERT INTO site_settings (setting_key, setting_value) VALUES ($1, $2)
+                         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2`, [key, settingsToUpdate[key]]
+                    );
+                }
             }
             
             await client.query('COMMIT');
@@ -1310,7 +1368,6 @@ app.post('/admin/settings', checkAdminAuth, async (req, res) => {
         res.status(500).send('Error saving settings.');
     }
 });
-// END: MODIFIED ADMIN ROUTES FOR SITE SETTINGS
 
 
 app.use((err, req, res, next) => {
